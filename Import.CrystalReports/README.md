@@ -26,10 +26,10 @@ These assemblies are not included with the tool. The packages will not work if t
 
 Operational system | Platform Target, CPU | Installation package requirements
 ------------------ | -------------------- | ---------------------------------
-Windows x32 | Any CPU | ‘SAP Crystal Reports runtime engine 32 bit'.
-Windows x64 | Any CPU | ‘SAP Crystal Reports runtime engine 64 bit'.
+Windows x32 | Any CPU | SAP Crystal Reports runtime engine 32 bit
+Windows x64 | Any CPU | SAP Crystal Reports runtime engine 64 bit
 Windows x64 + runtime engine x32bit | X86 | not required
-Windows x64 + runtime engine x32bit | Any CPU | ‘SAP Crystal Reports runtime engine 64 bit'.
+Windows x64 + runtime engine x32bit | Any CPU | SAP Crystal Reports runtime engine 64 bit
 
 ## The above mentioned installers can be downloaded using the following links
 
