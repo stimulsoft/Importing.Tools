@@ -1,0 +1,29 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.26730.15
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Import.VisualFoxPro", "Import.VisualFoxPro\Import.VisualFoxPro.csproj", "{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Demo|Any CPU = Demo|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}.Demo|Any CPU.ActiveCfg = Demo|Any CPU
+		{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}.Demo|Any CPU.Build.0 = Demo|Any CPU
+		{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		VisualSVNWorkingCopyRoot = .
+		SolutionGuid = {21BEB7D9-5F2F-4995-AA99-62AD85EACC8E}
+	EndGlobalSection
+EndGlobal
