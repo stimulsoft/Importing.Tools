@@ -20,7 +20,7 @@ All of them have their own Visual Studio solution (.sln-file), as well as additi
 # Running importing tools
 In order to start simply open the Visual Studio solution file in the IDE Visual Studio and run the required project as Startup Project. The required libraries will be automatically downloaded from NuGet repository. To run the Crystal Reports importing tool please read [this instructions](Import.CrystalReports/README.md).
 
----
+# Stimulsoft Reports
 
 [Live Demo](http://demo.stimulsoft.com/#Net)
 
