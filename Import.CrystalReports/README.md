@@ -22,7 +22,7 @@ The project uses the following Crystal Reports assemblies:
 
 These assemblies are not included with the tool. The packages will not work if they are just referenced and copied to the project without the proper installation by the Crystal Reports’ official installer first.
 
-Please find the explanation of the required installations:
+## Please find the explanation of the required installations
 
 Operational system | Platform Target, CPU | Installation package requirements
 ------------------ | -------------------- | ---------------------------------
@@ -31,16 +31,16 @@ Windows x64 | Any CPU | ‘SAP Crystal Reports runtime engine 64 bit'.
 Windows x64 + runtime engine x32bit | X86 | not required
 Windows x64 + runtime engine x32bit | Any CPU | ‘SAP Crystal Reports runtime engine 64 bit'.
 
-The above mentioned installers can be downloaded using the following links:
+## The above mentioned installers can be downloaded using the following links
 
-(http://www.crystalreports.com/crvs/confirm/)
-(http://downloads.businessobjects.com/akdlm/cr4vs2010/CRforVS_redist_install_32bit_13_0_20.zip)
-(http://downloads.businessobjects.com/akdlm/cr4vs2010/CRforVS_redist_install_64bit_13_0_20.zip)
+http://www.crystalreports.com/crvs/confirm/
+http://downloads.businessobjects.com/akdlm/cr4vs2010/CRforVS_redist_install_32bit_13_0_20.zip
+http://downloads.businessobjects.com/akdlm/cr4vs2010/CRforVS_redist_install_64bit_13_0_20.zip
 
 Please read more about the requirements of those additional installations in the official reply from the Crystal Reports:
 
-(https://archive.sap.com/discussions/thread/3675145)
+https://archive.sap.com/discussions/thread/3675145
 
-# Run Crystal Reports on client machine without install runtime package?
+## Run Crystal Reports on client machine without install runtime package?
 
 No, the only way to make your app work is to run one of the redist packages on the user’s PC. We don't support nor do we have a way to manually deploy the runtime. Too many Registry entries and registering of the dll's in order to do this manually.
