@@ -1,4 +1,4 @@
-# XtraReports DevExpress importing tool
+# DevExpress XtraReports importing tool
 
 This utility is designed for importing report templates, created using the DevExpress, to the Stimulsoft Reports format. The tool is present in the source code. This is a project in the C# code for the Visual Studio 2013 or higher.
 
