@@ -15,6 +15,7 @@ using Stimulsoft.Base;
 using Stimulsoft.Base.Drawing;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
+using System.Runtime.ExceptionServices;
 //using CrystalDecisions.ReportAppServer.ReportDefModel;
 
 
@@ -1746,48 +1747,55 @@ namespace Import.CrystalReports
 			}
 		}
 
-
-		private string TypeField(FieldObject obj, StiComponent component)
+        [HandleProcessCorruptedStateExceptions]
+        private string TypeField(FieldObject obj, StiComponent component)
 		{
-			switch (obj.DataSource.Kind)
-			{
-				case FieldKind.DatabaseField:
-				{
-					return GetDataBaseField(obj);
-				}
-				case FieldKind.FormulaField:
-				{
-					return GetFormulaField(obj);
-				}
-				case FieldKind.GroupNameField:
-				{
-					return GetGroupNameField(obj);
-				}
-				case FieldKind.ParameterField:
-				{
-					return GetParameterField(obj);
-				}
-				case FieldKind.RunningTotalField:
-				{
-					return GetRunningTotalField(obj);
-				}
-				case FieldKind.SpecialVarField:
-				{
-					return GetSpecialVarField(obj);
-				}
-				case FieldKind.SQLExpressionField:
-				{
-					return GetSQLExpressionField(obj);
-				}
-				case FieldKind.SummaryField:
-				{
-					return GetSummaryField(obj, component);
-				}
-				default:
-				{
-					return null;
-				}
-			}
+            try
+            {
+                switch (obj.DataSource.Kind)
+                {
+                    case FieldKind.DatabaseField:
+                        {
+                            return GetDataBaseField(obj);
+                        }
+                    case FieldKind.FormulaField:
+                        {
+                            return GetFormulaField(obj);
+                        }
+                    case FieldKind.GroupNameField:
+                        {
+                            return GetGroupNameField(obj);
+                        }
+                    case FieldKind.ParameterField:
+                        {
+                            return GetParameterField(obj);
+                        }
+                    case FieldKind.RunningTotalField:
+                        {
+                            return GetRunningTotalField(obj);
+                        }
+                    case FieldKind.SpecialVarField:
+                        {
+                            return GetSpecialVarField(obj);
+                        }
+                    case FieldKind.SQLExpressionField:
+                        {
+                            return GetSQLExpressionField(obj);
+                        }
+                    case FieldKind.SummaryField:
+                        {
+                            return GetSummaryField(obj, component);
+                        }
+                    default:
+                        {
+                            return null;
+                        }
+                }
+            }
+            catch
+            {
+                return null;
+            }
         }
         #endregion
 
