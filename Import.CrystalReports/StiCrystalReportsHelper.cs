@@ -430,7 +430,7 @@ namespace Import.CrystalReports
                 log.CloseNode();
                 #endregion
 
-				stimulReport.Info.ShowHeaders = false;
+                stimulReport.Info.ShowHeaders = false;
                 htNames = new Hashtable();
 
                 if ((crystalReport.Subreports != null) && (crystalReport.Subreports.Count > 0))
@@ -471,11 +471,13 @@ namespace Import.CrystalReports
 
             #region Postprocess report
             stimulReport.Info.ShowHeaders = true;
+            stimulReport.Info.ForceDesigningMode = true;    //force DockToContainer for components with Enabled=false
             foreach (StiPage page in stimulReport.Pages)
             {
                 page.DockToContainer();
                 page.Correct();
             }
+            stimulReport.Info.ForceDesigningMode = false;
 
             foreach (StiComponent comp in stimulReport.GetComponents())
             {
@@ -1387,12 +1389,14 @@ namespace Import.CrystalReports
             }
             #endregion
 
+            stimulReport.Info.ForceDesigningMode = true;
             page.DockToContainer();
             page.Correct();
+            stimulReport.Info.ForceDesigningMode = false;
 
         }
 
-		private void AddBands(StiPage page, ReportDocument crystalReport, StiDataSource mainDataSource, IStiTreeLog log)
+        private void AddBands(StiPage page, ReportDocument crystalReport, StiDataSource mainDataSource, IStiTreeLog log)
 		{
 			double bandPosition = 0;
             for (int sectionIndex = 0; sectionIndex < crystalReport.ReportDefinition.Sections.Count; sectionIndex++)
@@ -2040,7 +2044,8 @@ namespace Import.CrystalReports
             TextObject obj = o as TextObject;
 
             text.Border = ConvertBorder(obj.Border);
-            text.Text = ReplaceFieldsAndVariables(obj.Text.Replace("\n", ""));
+            //text.Text = ReplaceFieldsAndVariables(obj.Text.Replace("\n", ""));
+            text.Text = ReplaceFieldsAndVariables(obj.Text);
             text.Font = obj.Font;
 
             ConvertProperties(text, obj);
@@ -2049,7 +2054,10 @@ namespace Import.CrystalReports
             //text.Brush = new StiSolidBrush(obj.Border.BackgroundColor);
             text.Brush = new StiSolidBrush(GetBackgroundColorFromBorder(obj.Border));
             text.HorAlignment = ConvertTextAligment(obj.ObjectFormat.HorizontalAlignment);
-            text.WordWrap = obj.ObjectFormat.EnableCanGrow;
+
+            //text.WordWrap = obj.ObjectFormat.EnableCanGrow;   //??? only in old versions?
+            text.CanGrow = obj.ObjectFormat.EnableCanGrow;
+            text.WordWrap = true;
 
             text.Angle = GetTextRotationAngle(obj, "RasTextObject");
 
@@ -2111,23 +2119,27 @@ namespace Import.CrystalReports
             {
                 LineObject obj = o as LineObject;
 
+                //float lineSize = obj.LineThickness / 20f;
+                float lineSize = obj.LineThickness * unit;
+
                 StiLinePrimitive line = null;
                 if (obj.Width <= 0)
                 {
                     line = new StiVerticalLinePrimitive();
                     line.Height = obj.Height * unit;
+                    line.Left += lineSize / 2;
                 }
                 else
                 {
                     line = new StiHorizontalLinePrimitive();
                     line.Width = obj.Width * unit;
+                    line.Top += lineSize / 2;
                 }
-                //line.Size = obj.LineThickness * unit;
-                line.Size = obj.LineThickness / 20f;
+                line.Size = lineSize;
                 line.Style = ConvertLineStyle(obj.LineStyle);
                 line.Color = obj.LineColor;
-                line.Left = obj.Left * unit;
-                line.Top = obj.Top * unit;
+                line.Left += obj.Left * unit;
+                line.Top += obj.Top * unit;
 
                 return line;
             }
@@ -2180,7 +2192,8 @@ namespace Import.CrystalReports
                 valueCornerEllipseWidth = (int)obj2;
             }
 
-            float roundValue = ((valueCornerEllipseWidth + valueCornerEllipseHeight) / 2f) / (float)(obj.Width > obj.Height ? obj.Height : obj.Width);
+            float roundValue = ((valueCornerEllipseWidth + valueCornerEllipseHeight) / 2f) * unit / (float)(obj.Width > obj.Height ? obj.Height : obj.Width);
+            roundValue = Math.Min(roundValue, 0.49f);
             #endregion
 
             if (usePrimitives)
