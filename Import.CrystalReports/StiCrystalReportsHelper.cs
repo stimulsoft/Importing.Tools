@@ -2367,6 +2367,7 @@ namespace Import.CrystalReports
 			#endregion
 
 			StiBorder brd = new StiBorder();
+            brd.Side = sides;
 
 			if (solid)
 			{
