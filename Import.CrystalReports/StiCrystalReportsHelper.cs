@@ -195,15 +195,20 @@ namespace Import.CrystalReports
         {
             bool flag = true;
             string formula = value.Trim();
+            formula = NormalizeEndOfLineSymbols(formula).Replace("\r\n", " \r\n ");
+
             try
             {
                 formula = formula.Replace("ToNumber", "double.Parse");
                 formula = formula.Replace(" {", " ").Replace("{", " ");
                 formula = formula.Replace("} ", " ").Replace("}", " ");
+                formula = formula.Replace(" AND ", " && ");
                 formula = formula.Replace(" and ", " && ");
+                formula = formula.Replace(" OR ", " || ");
                 formula = formula.Replace(" or ", " || ");
 
-                formula = formula.Replace("isnull", "IsNull");
+                formula = formula.Replace("IsNull", "IsNull1");
+                formula = formula.Replace("isnull", "IsNull1");
                 formula = formula.Replace("trim", "Trim");
                 formula = formula.Replace("length", "Length");
                 formula = formula.Replace("Pagenumber", "PageNumber");
@@ -226,18 +231,19 @@ namespace Import.CrystalReports
 
                 if (formula.Contains(":="))
                 {
-                    formula = formula.Replace(" If ", " if ");
-                    formula = formula.Replace(" then ", "");
-                    formula = formula.Replace(" Then ", "");
+                    formula = formula.Replace(" If ", " if(");
+                    formula = formula.Replace(" if ", " if(");
+                    formula = formula.Replace(" then ", " ) ");
+                    formula = formula.Replace(" Then ", " ) ");
                     formula = formula.Replace(" Else ", " else ");
 
                     formula = formula.Replace(":=", "=");
 
                     //identation
-                    List<string> lines = Stimulsoft.Report.Export.StiExportUtils.SplitString(formula, false);
+                    List<string> lines = SplitString(formula);
                     for (int index = 0; index < lines.Count; index++)
                     {
-                        lines[index] = "\t" + lines[index];
+                        lines[index] = "\t" + lines[index] + " ";
                     }
 
                     //make result
@@ -274,7 +280,10 @@ namespace Import.CrystalReports
                     formula = formula.Replace(" else ", " : ");
                     formula = formula.Replace(" Else ", " : ");
 
-                    value = value.Replace("\r\n", " ").Replace("\r", " ").Replace("\n", " ");
+                    formula = formula.Replace("UpperCase", "ToUpperCase");
+                    formula = formula.Replace("LowerCase", "ToLowerCase");
+
+                    //formula = formula.Replace("\r\n", " ").Replace("\r", " ").Replace("\n", " ");
                 }
 
                 variable.InitBy = StiVariableInitBy.Expression;
@@ -288,6 +297,59 @@ namespace Import.CrystalReports
                 flag = false;
             }
             return flag;
+        }
+
+        private static string NormalizeEndOfLineSymbols(string inputText)
+        {
+            if (inputText == null || inputText.Length < 2 || (inputText.IndexOf('\r') == -1 && inputText.IndexOf('\n') == -1))
+                return inputText;
+
+            var sb = new StringBuilder();
+            for (var index = 0; index < inputText.Length; index++)
+            {
+                var ch = inputText[index];
+                if (ch == '\r' || ch == '\n')
+                {
+                    if (index + 1 < inputText.Length)
+                    {
+                        var ch2 = inputText[index + 1];
+                        if ((ch2 == '\r' || ch2 == '\n') && (ch2 != ch))
+                            index++;
+                    }
+                    sb.Append("\r\n");
+                }
+                else
+                {
+                    sb.Append(ch);
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        public static List<string> SplitString(string inputString)
+        {
+            var stringList = new List<string>();
+            if (inputString == null) inputString = string.Empty;
+
+            var st = new StringBuilder();
+            foreach (char ch in inputString)
+            {
+                if (ch == '\n') continue;
+                if (ch == '\r')
+                {
+                    stringList.Add(st.ToString().TrimEnd());
+                    st.Length = 0;
+                }
+                else
+                {
+                    st.Append(ch);
+                }
+            }
+            if (st.Length > 0) stringList.Add(st.ToString().TrimEnd());
+            if (stringList.Count == 0) stringList.Add(string.Empty);
+
+            return stringList;
         }
 
         private Color GetBackgroundColorFromBorder(Border border)
@@ -491,18 +553,25 @@ namespace Import.CrystalReports
             #endregion
 
             #region Add methods
-            if (methods.Count > 0)
+            //if (methods.Count > 0)
             {
                 int methodsPos = stimulReport.Script.IndexOf("#region StiReport");
                 if (methodsPos > 0)
                 {
                     methodsPos -= 9;
 
-                    methods.AddRange(new string[] { 
+                    methods.AddRange(new string[] {
+                        "private string ToText(string x) { return x; }",
                         "private string ToText(double x) { return x.ToString(); }",
                         "private string ToText(double x, int y) { return x.ToString(\"F\" + y.ToString()); }",
                         "private string ToText(DateTime x, string y) { return x.ToString(y); }",
-                        "private string Trim(string st) { return st.Trim(); }"
+                        "private string Trim(string st) { return st.Trim(); }",
+                        "private string TrimRight(string st) { return st.TrimEnd(); }",
+                        "private string TrimLeft(string st) { return st.TrimStart(); }",
+                        "private string UpperCase(string st) { return st.ToUpper(); }",
+                        "private string LowerCase(string st) { return st.ToLower(); }",
+                        "private bool IsNull1(object obj) { return obj == null || obj == DBNull.Value; }",
+                        "private DateTime DateValue(object obj) { return (DateTime)Stimulsoft.Base.StiConvert.ChangeType(obj, typeof(DateTime), true); }"
                     });
 
                     foreach (string st in methods)
@@ -1307,7 +1376,11 @@ namespace Import.CrystalReports
             {
                 if (var.Category == "Formula Fields" && useFunctions)
                 {
-                    var.Value = ReplaceFieldsAndVariables(var.Value);
+                    //var.Value = ReplaceFieldsAndVariables(var.Value);
+                    foreach (DictionaryEntry de in htVariableConversion)
+                    {
+                        if (var.Value.Contains((string)de.Key)) var.Value = var.Value.Replace((string)de.Key, (string)de.Value);
+                    }
                 }
             }
             #endregion
