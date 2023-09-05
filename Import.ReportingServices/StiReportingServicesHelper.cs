@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2017 Stimulsoft
+#region Copyright (C) 2003-2023 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2017 Stimulsoft     							}
+{	Copyright (C) 2003-2023 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2017 Stimulsoft
+#endregion Copyright (C) 2003-2023 Stimulsoft
 
 using System;
 using System.Collections;
@@ -34,6 +34,7 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Xml;
 using Stimulsoft.Base.Drawing;
@@ -69,6 +70,7 @@ namespace Stimulsoft.Report.Import
             page.PaperSize = System.Drawing.Printing.PaperKind.Letter;
             page.Margins = new StiMargins(0, 0, 0, 0);
             double reportWidth = 0;
+            string code = null;
 
             if (flagCounter == 0)
             {
@@ -114,6 +116,10 @@ namespace Stimulsoft.Report.Import
 
                     case "ReportParameters":
                         ProcessReportParametersType(node, report);
+                        break;
+
+                    case "Code":
+                        code = GetNodeTextValue(node);
                         break;
                 }
             }
@@ -300,20 +306,41 @@ namespace Stimulsoft.Report.Import
                 int methodsPos = -1;
                 if (ConvertSyntaxToCSharp)
                 {
-                    methods.AddRange(new string[] { 
-                        "private string format(DateTime dt, string format) { return dt.ToString(format); }"
+                    methods.AddRange(new string[] {
+                        "private string format(DateTime dt, string format) { return dt.ToString(format); }",
+                        "private string format(object obj) { return obj.ToString(); }"
                     });
 
                     methodsPos = report.Script.IndexOf("#region StiReport");
+
+                    if (code != null)
+                    {
+                        methods.Add(string.Empty);
+                        methods.Add("#region Code");
+                        methods.AddRange(Stimulsoft.Report.Export.StiExportUtils.SplitString(code, true));
+                        methods.Add("#endregion");
+                    }
                 }
                 else
                 {
                     methods.AddRange(new string[] {
                         "Public Function DateAdd(Interval As Microsoft.VisualBasic.DateInterval, Number As Double, DateValue As String) As DateTime",
                         "    Return DateAdd(Interval, Number, System.Convert.ToString(DateValue))",
-                        "End Function" });
+                        "End Function",
+                        "Protected Overloads Function Format(obj As Object) As string",
+		                "   Return obj.ToString()",
+		                "End Function"
+                    });
 
                     methodsPos = report.Script.IndexOf("#Region \"StiReport");
+
+                    if (code != null)
+                    {
+                        methods.Add(string.Empty);
+                        methods.Add("#Region \"Code\"");
+                        methods.AddRange(Stimulsoft.Report.Export.StiExportUtils.SplitString(code, true));
+                        methods.Add("#End Region 'Code");
+                    }
                 }
 
                 if (methodsPos > 0)
@@ -647,7 +674,7 @@ namespace Stimulsoft.Report.Import
                 if (source == "Embedded")
                 {
                     Image image = (Image)embeddedImages[value];
-                    if (image != null) component.Image = image;
+                    if (image != null) component.PutImage(image);
                 }
                 else if (source == "External")
                 {
@@ -2255,7 +2282,7 @@ namespace Stimulsoft.Report.Import
             StiDatabase dataBase = null;
             string databaseName = baseNode.ParentNode.Attributes["Name"].Value;
             string dataProvider = null;
-            string connectString = string.Format("Data Source=.;Initial Catalog={0};Integrated Security=True", databaseName);
+            string connectString = $"Data Source=.;Initial Catalog={databaseName};Integrated Security=True";
 
             foreach (XmlNode node in baseNode.ChildNodes)
             {
@@ -2365,8 +2392,8 @@ namespace Stimulsoft.Report.Import
                     column.DataSource = dataSource;
                     dataSource.Columns.Add(column);
 
-                    string baseField = string.Format("Fields!{0}.Value", column.Name);
-                    string newField = string.Format("{0}.{1}", dataSource.Name, column.Name);
+                    string baseField = $"Fields!{column.Name}.Value";
+                    string newField = $"{dataSource.Name}.{column.Name}";
                     fieldsNames[baseField] = newField;
                     fieldsNames[dataSource.Name + ":" + baseField] = newField;
                 }
@@ -2548,7 +2575,11 @@ namespace Stimulsoft.Report.Import
                 {
                     case "Value":
                         string st = ConvertExpression(GetNodeTextValue(node), null);
-                        parameter.Expression = st.Substring(1, st.Length - 2);
+                        if (st.StartsWith("{") && st.EndsWith("}"))
+                        {
+                            st = st.Substring(1, st.Length - 2);
+                        }
+                        parameter.Expression = st;
                         break;
 
                     default:
@@ -3038,153 +3069,153 @@ namespace Stimulsoft.Report.Import
                     {
                         #region Init hashtable
                         string[,] initData = {
-                        {"AliceBlue",	    "#F0F8FF"},
-                        {"AntiqueWhite",	"#FAEBD7"},
-                        {"Aqua",	    "#00FFFF"},
-                        {"Aquamarine",	"#7FFFD4"},
-                        {"Azure",	    "#F0FFFF"},
-                        {"Beige",	    "#F5F5DC"},
-                        {"Bisque",	    "#FFE4C4"},
-                        {"Black",	    "#000000"},
-                        {"BlanchedAlmond",	"#FFEBCD"},
-                        {"Blue",	    "#0000FF"},
-                        {"BlueViolet",	"#8A2BE2"},
-                        {"Brown",	    "#A52A2A"},
-                        {"BurlyWood",	"#DEB887"},
-                        {"CadetBlue",	"#5F9EA0"},
-                        {"Chartreuse",	"#7FFF00"},
-                        {"Chocolate",	"#D2691E"},
-                        {"Coral",	    "#FF7F50"},
-                        {"CornflowerBlue",	"#6495ED"},
-                        {"Cornsilk",	"#FFF8DC"},
-                        {"Crimson",	    "#DC143C"},
-                        {"Cyan",	    "#00FFFF"},
-                        {"DarkBlue",	"#00008B"},
-                        {"DarkCyan",	"#008B8B"},
-                        {"DarkGoldenRod",	"#B8860B"},
-                        {"DarkGray",	"#A9A9A9"},
-                        {"DarkGrey",	"#A9A9A9"},
-                        {"DarkGreen",	"#006400"},
-                        {"DarkKhaki",	"#BDB76B"},
-                        {"DarkMagenta",	"#8B008B"},
-                        {"DarkOliveGreen",	"#556B2F"},
-                        {"Darkorange",	"#FF8C00"},
-                        {"DarkOrchid",	"#9932CC"},
-                        {"DarkRed",	    "#8B0000"},
-                        {"DarkSalmon",	"#E9967A"},
-                        {"DarkSeaGreen",	"#8FBC8F"},
-                        {"DarkSlateBlue",	"#483D8B"},
-                        {"DarkSlateGray",	"#2F4F4F"},
-                        {"DarkSlateGrey",	"#2F4F4F"},
-                        {"DarkTurquoise",	"#00CED1"},
-                        {"DarkViolet",	"#9400D3"},
-                        {"DeepPink",	"#FF1493"},
-                        {"DeepSkyBlue",	"#00BFFF"},
-                        {"DimGray",	    "#696969"},
-                        {"DimGrey",	    "#696969"},
-                        {"DodgerBlue",	"#1E90FF"},
-                        {"FireBrick",	"#B22222"},
-                        {"FloralWhite",	"#FFFAF0"},
-                        {"ForestGreen",	"#228B22"},
-                        {"Fuchsia",	    "#FF00FF"},
-                        {"Gainsboro",	"#DCDCDC"},
-                        {"GhostWhite",	"#F8F8FF"},
-                        {"Gold",	    "#FFD700"},
-                        {"GoldenRod",	"#DAA520"},
-                        {"Gray",	    "#808080"},
-                        {"Grey",	    "#808080"},
-                        {"Green",	    "#008000"},
-                        {"GreenYellow",	"#ADFF2F"},
-                        {"HoneyDew",	"#F0FFF0"},
-                        {"HotPink",	    "#FF69B4"},
-                        {"IndianRed",	"#CD5C5C"},
-                        {"Indigo",	    "#4B0082"},
-                        {"Ivory",	    "#FFFFF0"},
-                        {"Khaki",	    "#F0E68C"},
-                        {"Lavender",	"#E6E6FA"},
-                        {"LavenderBlush",	"#FFF0F5"},
-                        {"LawnGreen",	"#7CFC00"},
-                        {"LemonChiffon",	"#FFFACD"},
-                        {"LightBlue",	"#ADD8E6"},
-                        {"LightCoral",	"#F08080"},
-                        {"LightCyan",	"#E0FFFF"},
-                        {"LightGoldenRodYellow",	"#FAFAD2"},
-                        {"LightGray",	"#D3D3D3"},
-                        {"LightGrey",	"#D3D3D3"},
-                        {"LightGreen",	"#90EE90"},
-                        {"LightPink",	"#FFB6C1"},
-                        {"LightSalmon",	"#FFA07A"},
-                        {"LightSeaGreen",	"#20B2AA"},
-                        {"LightSkyBlue",	"#87CEFA"},
-                        {"LightSlateGray",	"#778899"},
-                        {"LightSlateGrey",	"#778899"},
-                        {"LightSteelBlue",	"#B0C4DE"},
-                        {"LightYellow",	"#FFFFE0"},
-                        {"Lime",	    "#00FF00"},
-                        {"LimeGreen",	"#32CD32"},
-                        {"Linen",	    "#FAF0E6"},
-                        {"Magenta",	    "#FF00FF"},
-                        {"Maroon",	    "#800000"},
-                        {"MediumAquaMarine",	"#66CDAA"},
-                        {"MediumBlue",	"#0000CD"},
-                        {"MediumOrchid",	"#BA55D3"},
-                        {"MediumPurple",	"#9370D8"},
-                        {"MediumSeaGreen",	"#3CB371"},
-                        {"MediumSlateBlue",	"#7B68EE"},
-                        {"MediumSpringGreen",	"#00FA9A"},
-                        {"MediumTurquoise",	"#48D1CC"},
-                        {"MediumVioletRed",	"#C71585"},
-                        {"MidnightBlue",	"#191970"},
-                        {"MintCream",	"#F5FFFA"},
-                        {"MistyRose",	"#FFE4E1"},
-                        {"Moccasin",	"#FFE4B5"},
-                        {"NavajoWhite",	"#FFDEAD"},
-                        {"Navy",	    "#000080"},
-                        {"OldLace",	    "#FDF5E6"},
-                        {"Olive",	    "#808000"},
-                        {"OliveDrab",	"#6B8E23"},
-                        {"Orange",	    "#FFA500"},
-                        {"OrangeRed",	"#FF4500"},
-                        {"Orchid",	    "#DA70D6"},
-                        {"PaleGoldenRod",	"#EEE8AA"},
-                        {"PaleGreen",	"#98FB98"},
-                        {"PaleTurquoise",	"#AFEEEE"},
-                        {"PaleVioletRed",	"#D87093"},
-                        {"PapayaWhip",	"#FFEFD5"},
-                        {"PeachPuff",	"#FFDAB9"},
-                        {"Peru",	    "#CD853F"},
-                        {"Pink",	    "#FFC0CB"},
-                        {"Plum",	    "#DDA0DD"},
-                        {"PowderBlue",	"#B0E0E6"},
-                        {"Purple",	    "#800080"},
-                        {"Red",	        "#FF0000"},
-                        {"RosyBrown",	"#BC8F8F"},
-                        {"RoyalBlue",	"#4169E1"},
-                        {"SaddleBrown",	"#8B4513"},
-                        {"Salmon",	    "#FA8072"},
-                        {"SandyBrown",	"#F4A460"},
-                        {"SeaGreen",	"#2E8B57"},
-                        {"SeaShell",	"#FFF5EE"},
-                        {"Sienna",	    "#A0522D"},
-                        {"Silver",	    "#C0C0C0"},
-                        {"SkyBlue",	    "#87CEEB"},
-                        {"SlateBlue",	"#6A5ACD"},
-                        {"SlateGray",	"#708090"},
-                        {"SlateGrey",	"#708090"},
-                        {"Snow",	    "#FFFAFA"},
-                        {"SpringGreen",	"#00FF7F"},
-                        {"SteelBlue",	"#4682B4"},
-                        {"Tan",	        "#D2B48C"},
-                        {"Teal",	    "#008080"},
-                        {"Thistle",	    "#D8BFD8"},
-                        {"Tomato",	    "#FF6347"},
-                        {"Turquoise",	"#40E0D0"},
-                        {"Violet",	    "#EE82EE"},
-                        {"Wheat",	    "#F5DEB3"},
-                        {"White",	    "#FFFFFF"},
-                        {"WhiteSmoke",	"#F5F5F5"},
-                        {"Yellow",	    "#FFFF00"},
-                        {"YellowGreen",	"#9ACD32"}};
+                        {"AliceBlue",       "#F0F8FF"},
+                        {"AntiqueWhite",    "#FAEBD7"},
+                        {"Aqua",        "#00FFFF"},
+                        {"Aquamarine",  "#7FFFD4"},
+                        {"Azure",       "#F0FFFF"},
+                        {"Beige",       "#F5F5DC"},
+                        {"Bisque",      "#FFE4C4"},
+                        {"Black",       "#000000"},
+                        {"BlanchedAlmond",  "#FFEBCD"},
+                        {"Blue",        "#0000FF"},
+                        {"BlueViolet",  "#8A2BE2"},
+                        {"Brown",       "#A52A2A"},
+                        {"BurlyWood",   "#DEB887"},
+                        {"CadetBlue",   "#5F9EA0"},
+                        {"Chartreuse",  "#7FFF00"},
+                        {"Chocolate",   "#D2691E"},
+                        {"Coral",       "#FF7F50"},
+                        {"CornflowerBlue",  "#6495ED"},
+                        {"Cornsilk",    "#FFF8DC"},
+                        {"Crimson",     "#DC143C"},
+                        {"Cyan",        "#00FFFF"},
+                        {"DarkBlue",    "#00008B"},
+                        {"DarkCyan",    "#008B8B"},
+                        {"DarkGoldenRod",   "#B8860B"},
+                        {"DarkGray",    "#A9A9A9"},
+                        {"DarkGrey",    "#A9A9A9"},
+                        {"DarkGreen",   "#006400"},
+                        {"DarkKhaki",   "#BDB76B"},
+                        {"DarkMagenta", "#8B008B"},
+                        {"DarkOliveGreen",  "#556B2F"},
+                        {"Darkorange",  "#FF8C00"},
+                        {"DarkOrchid",  "#9932CC"},
+                        {"DarkRed",     "#8B0000"},
+                        {"DarkSalmon",  "#E9967A"},
+                        {"DarkSeaGreen",    "#8FBC8F"},
+                        {"DarkSlateBlue",   "#483D8B"},
+                        {"DarkSlateGray",   "#2F4F4F"},
+                        {"DarkSlateGrey",   "#2F4F4F"},
+                        {"DarkTurquoise",   "#00CED1"},
+                        {"DarkViolet",  "#9400D3"},
+                        {"DeepPink",    "#FF1493"},
+                        {"DeepSkyBlue", "#00BFFF"},
+                        {"DimGray",     "#696969"},
+                        {"DimGrey",     "#696969"},
+                        {"DodgerBlue",  "#1E90FF"},
+                        {"FireBrick",   "#B22222"},
+                        {"FloralWhite", "#FFFAF0"},
+                        {"ForestGreen", "#228B22"},
+                        {"Fuchsia",     "#FF00FF"},
+                        {"Gainsboro",   "#DCDCDC"},
+                        {"GhostWhite",  "#F8F8FF"},
+                        {"Gold",        "#FFD700"},
+                        {"GoldenRod",   "#DAA520"},
+                        {"Gray",        "#808080"},
+                        {"Grey",        "#808080"},
+                        {"Green",       "#008000"},
+                        {"GreenYellow", "#ADFF2F"},
+                        {"HoneyDew",    "#F0FFF0"},
+                        {"HotPink",     "#FF69B4"},
+                        {"IndianRed",   "#CD5C5C"},
+                        {"Indigo",      "#4B0082"},
+                        {"Ivory",       "#FFFFF0"},
+                        {"Khaki",       "#F0E68C"},
+                        {"Lavender",    "#E6E6FA"},
+                        {"LavenderBlush",   "#FFF0F5"},
+                        {"LawnGreen",   "#7CFC00"},
+                        {"LemonChiffon",    "#FFFACD"},
+                        {"LightBlue",   "#ADD8E6"},
+                        {"LightCoral",  "#F08080"},
+                        {"LightCyan",   "#E0FFFF"},
+                        {"LightGoldenRodYellow",    "#FAFAD2"},
+                        {"LightGray",   "#D3D3D3"},
+                        {"LightGrey",   "#D3D3D3"},
+                        {"LightGreen",  "#90EE90"},
+                        {"LightPink",   "#FFB6C1"},
+                        {"LightSalmon", "#FFA07A"},
+                        {"LightSeaGreen",   "#20B2AA"},
+                        {"LightSkyBlue",    "#87CEFA"},
+                        {"LightSlateGray",  "#778899"},
+                        {"LightSlateGrey",  "#778899"},
+                        {"LightSteelBlue",  "#B0C4DE"},
+                        {"LightYellow", "#FFFFE0"},
+                        {"Lime",        "#00FF00"},
+                        {"LimeGreen",   "#32CD32"},
+                        {"Linen",       "#FAF0E6"},
+                        {"Magenta",     "#FF00FF"},
+                        {"Maroon",      "#800000"},
+                        {"MediumAquaMarine",    "#66CDAA"},
+                        {"MediumBlue",  "#0000CD"},
+                        {"MediumOrchid",    "#BA55D3"},
+                        {"MediumPurple",    "#9370D8"},
+                        {"MediumSeaGreen",  "#3CB371"},
+                        {"MediumSlateBlue", "#7B68EE"},
+                        {"MediumSpringGreen",   "#00FA9A"},
+                        {"MediumTurquoise", "#48D1CC"},
+                        {"MediumVioletRed", "#C71585"},
+                        {"MidnightBlue",    "#191970"},
+                        {"MintCream",   "#F5FFFA"},
+                        {"MistyRose",   "#FFE4E1"},
+                        {"Moccasin",    "#FFE4B5"},
+                        {"NavajoWhite", "#FFDEAD"},
+                        {"Navy",        "#000080"},
+                        {"OldLace",     "#FDF5E6"},
+                        {"Olive",       "#808000"},
+                        {"OliveDrab",   "#6B8E23"},
+                        {"Orange",      "#FFA500"},
+                        {"OrangeRed",   "#FF4500"},
+                        {"Orchid",      "#DA70D6"},
+                        {"PaleGoldenRod",   "#EEE8AA"},
+                        {"PaleGreen",   "#98FB98"},
+                        {"PaleTurquoise",   "#AFEEEE"},
+                        {"PaleVioletRed",   "#D87093"},
+                        {"PapayaWhip",  "#FFEFD5"},
+                        {"PeachPuff",   "#FFDAB9"},
+                        {"Peru",        "#CD853F"},
+                        {"Pink",        "#FFC0CB"},
+                        {"Plum",        "#DDA0DD"},
+                        {"PowderBlue",  "#B0E0E6"},
+                        {"Purple",      "#800080"},
+                        {"Red",         "#FF0000"},
+                        {"RosyBrown",   "#BC8F8F"},
+                        {"RoyalBlue",   "#4169E1"},
+                        {"SaddleBrown", "#8B4513"},
+                        {"Salmon",      "#FA8072"},
+                        {"SandyBrown",  "#F4A460"},
+                        {"SeaGreen",    "#2E8B57"},
+                        {"SeaShell",    "#FFF5EE"},
+                        {"Sienna",      "#A0522D"},
+                        {"Silver",      "#C0C0C0"},
+                        {"SkyBlue",     "#87CEEB"},
+                        {"SlateBlue",   "#6A5ACD"},
+                        {"SlateGray",   "#708090"},
+                        {"SlateGrey",   "#708090"},
+                        {"Snow",        "#FFFAFA"},
+                        {"SpringGreen", "#00FF7F"},
+                        {"SteelBlue",   "#4682B4"},
+                        {"Tan",         "#D2B48C"},
+                        {"Teal",        "#008080"},
+                        {"Thistle",     "#D8BFD8"},
+                        {"Tomato",      "#FF6347"},
+                        {"Turquoise",   "#40E0D0"},
+                        {"Violet",      "#EE82EE"},
+                        {"Wheat",       "#F5DEB3"},
+                        {"White",       "#FFFFFF"},
+                        {"WhiteSmoke",  "#F5F5F5"},
+                        {"Yellow",      "#FFFF00"},
+                        {"YellowGreen", "#9ACD32"}};
 
                         HtmlNameToColor = new Hashtable();
                         for (int index = 0; index < initData.GetLength(0); index++)
@@ -3303,8 +3334,12 @@ namespace Stimulsoft.Report.Import
 
             report.Dictionary.Variables.Add(var);
 
-            string baseField = string.Format("Parameters!{0}.Value", var.Name);
+            string baseField = $"Parameters!{var.Name}.Value";
             string newField = var.Name;
+            fieldsNames[baseField] = newField;
+
+            //Get Label is not supported yet, so used Value
+            baseField = $"Parameters!{var.Name}.Label";
             fieldsNames[baseField] = newField;
         }
 
@@ -3316,6 +3351,10 @@ namespace Stimulsoft.Report.Import
                 {
                     case "Values":
                         ProcessReportParameterDefaultValueValues(node, var);
+                        break;
+
+                    case "DataSetReference":
+                        ProcessReportParameterDefaultValueDataSetReference(node, var);
                         break;
 
                     default:
@@ -3370,6 +3409,10 @@ namespace Stimulsoft.Report.Import
                         ProcessReportParameterValidValuesDataSetReference(node, var);
                         break;
 
+                    case "ParameterValues":
+                        ProcessReportParameterValidValuesParameterValues(node, var);
+                        break;
+
                     default:
                         ThrowError(baseNode.Name, node.Name);
                         break;
@@ -3415,6 +3458,93 @@ namespace Stimulsoft.Report.Import
                 }
             }
 
+        }
+
+        private void ProcessReportParameterValidValuesParameterValues(XmlNode baseNode, StiVariable var)
+        {
+            List<string> values = new List<string>();
+            List<string> labels = new List<string>();
+            foreach (XmlNode node in baseNode.ChildNodes)
+            {
+                switch (node.Name)
+                {
+                    case "ParameterValue":
+                        ProcessReportParameterValidValuesParameterValue(node, var, values, labels);
+                        break;
+
+                    default:
+                        ThrowError(baseNode.Name, node.Name);
+                        break;
+                }
+            }
+
+            if (values.Count > 0)
+            {
+                var.DialogInfo.Keys = values.ToArray();
+                var.DialogInfo.Values = labels.ToArray();
+            }
+        }
+
+        private void ProcessReportParameterValidValuesParameterValue(XmlNode baseNode, StiVariable var, List<string> values, List<string> labels)
+        {
+            string value = null;
+            string label = null;
+            foreach (XmlNode node in baseNode.ChildNodes)
+            {
+                switch (node.Name)
+                {
+                    case "Value":
+                        value = GetNodeTextValue(node);
+                        break;
+
+                    case "Label":
+                        label = GetNodeTextValue(node);
+                        break;
+
+                    default:
+                        ThrowError(baseNode.Name, node.Name);
+                        break;
+                }
+            }
+            values.Add(value);
+            labels.Add(label);
+        }
+
+        private void ProcessReportParameterDefaultValueDataSetReference(XmlNode baseNode, StiVariable var)
+        {
+            string dataSetName = null;
+            string fieldName = null;
+
+            foreach (XmlNode node in baseNode.ChildNodes)
+            {
+                switch (node.Name)
+                {
+                    case "DataSetName":
+                        dataSetName = Convert.ToString(GetNodeTextValue(node));
+                        break;
+                }
+            }
+
+            foreach (XmlNode node in baseNode.ChildNodes)
+            {
+                switch (node.Name)
+                {
+                    case "ValueField":
+                        fieldName = Convert.ToString(GetNodeTextValue(node));
+                        break;
+
+                    case "DataSetName":
+                        //first pass
+                        break;
+
+                    default:
+                        ThrowError(baseNode.Name, node.Name);
+                        break;
+                }
+            }
+
+            var.InitBy = StiVariableInitBy.Expression;
+            var.Value = $"{dataSetName}.{fieldName}";
         }
         #endregion
 
@@ -3518,7 +3648,7 @@ namespace Stimulsoft.Report.Import
                         }
                         break;
 
-                    
+
                     //-----<xsd:element name="Body" type="BodyType"/>
                     //<xsd:element name="ReportItems" type="ReportItemsType" minOccurs="0"/>
                     //<xsd:element name="Height" type="SizeType"/>
@@ -3603,11 +3733,11 @@ namespace Stimulsoft.Report.Import
             string message = null;
             if (message1 == null)
             {
-                message = string.Format("Node not supported: {0}.{1}", baseNodeName, nodeName);
+                message = $"Node not supported: {baseNodeName}.{nodeName}";
             }
             else
             {
-                message = string.Format("{0}", message1);
+                message = message1;
             }
             errorList.Add(message);
         }
@@ -3621,18 +3751,19 @@ namespace Stimulsoft.Report.Import
             if (baseExpression.StartsWith("="))
             {
                 newExpression = "{" + baseExpression.Substring(1) + "}";
+
                 foreach (DictionaryEntry de in fieldsNames)
                 {
-                    if (dataset == null || baseExpression.StartsWith("=Parameters!"))
+                    if (dataset == null || ((string)de.Key).StartsWith("Parameters!"))
                     {
-                        newExpression = newExpression.Replace((string)de.Key, (string)de.Value);
+                        newExpression = StringReplaceIgnoreCase(newExpression, (string)de.Key, (string)de.Value);
                     }
                     else
                     {
-                        if (((string)de.Key).StartsWith(dataset + ":"))
+                        if (((string)de.Key).StartsWith(dataset + ":", StringComparison.OrdinalIgnoreCase))
                         {
                             string key = ((string)de.Key).Substring(dataset.Length + 1);
-                            newExpression = newExpression.Replace(key, (string)de.Value);
+                            newExpression = StringReplaceIgnoreCase(newExpression, key, (string)de.Value);
                         }
                     }
                 }
@@ -3644,7 +3775,7 @@ namespace Stimulsoft.Report.Import
 
                 if (ConvertSyntaxToCSharp)
                 {
-                    newExpression = newExpression.Replace("vbcrlf", "\"\\r\\n\"").Replace("VbCRLF", "\"\\r\\n\"").Replace("vbCrlf", "\"\\r\\n\"").Replace("vbcrLf", "\"\\r\\n\"").Replace("vbCrLf", "\"\\r\\n\"");
+                    newExpression = StringReplaceIgnoreCase(newExpression, "vbcrlf", "\"\\r\\n\"");
                     newExpression = newExpression.Replace(" & ", " + ");
                     newExpression = newExpression.Replace(" &\r\n", " +\r\n");
                 }
@@ -3660,8 +3791,99 @@ namespace Stimulsoft.Report.Import
                 newExpression = newExpression.Replace("Globals!OverallTotalPages", "TotalPageCountThrough");
                 newExpression = newExpression.Replace("Globals!ReportName", "ReportName");
 
+                int pos = -1;
+                while((pos = newExpression.IndexOf("Code.", pos + 1)) != -1)
+                {
+                    char ch = newExpression[pos - 1];
+                    if (!(char.IsLetterOrDigit(ch) || ch == '.'))
+                    {
+                        newExpression = newExpression.Remove(pos, 5);
+                    }
+                }
+
+                newExpression = TryParseFunctions(newExpression);
+                newExpression = RemoveLineFeedFromExpression(newExpression);
             }
             return newExpression;
+        }
+
+        private string StringReplaceIgnoreCase(string input, string from, string to)
+        {
+            return Regex.Replace(input, from, to, RegexOptions.IgnoreCase);
+        }
+
+        private string TryParseFunctions(string input)
+        {
+            StringComparison sc = ConvertSyntaxToCSharp ? StringComparison.InvariantCulture : StringComparison.InvariantCultureIgnoreCase;
+
+            foreach (string func in aggregateFunctions)
+            {
+                var regex = new Regex(func + @"[\s]*\(", RegexOptions.IgnoreCase);
+                int startIndex = 0;
+                while (startIndex < input.Length)
+                {
+                    var matches = regex.Matches(input, startIndex);
+                    if (matches.Count == 0) break;
+                    if (!matches[0].Success) break;
+                    string name = matches[0].Value;
+                    int index = matches[0].Index;
+                    input = input.Substring(0, index) + name + input.Substring(index + name.Length);
+                    int indexStart = index + name.Length;
+                    int indexEnd = input.IndexOf(")", indexStart);
+                    if (indexEnd == -1) break;
+                    string stArgs = input.Substring(indexStart, indexEnd - indexStart).Trim();
+                    string[] args = stArgs.Split(new char[] { ',' });
+                    if (args.Length == 2)
+                    {
+                        var dsName = args[1].Trim();
+                        dsName = dsName.Substring(1, dsName.Length - 2);
+                        var field = args[0].Trim();
+                        string oldSt = input.Substring(index, indexEnd - index);
+                        string newSt = $"Totals.{func}({dsName},{field}";
+                        input = input.Remove(index, oldSt.Length);
+                        input = input.Insert(index, newSt);
+                        indexEnd += newSt.Length - oldSt.Length;
+                    }
+                    if ((args.Length == 1) && (func.ToLowerInvariant() == "count"))
+                    {
+                        string arg1 = args[0].Trim();
+                        int posDot = arg1.LastIndexOf(".");
+                        if (posDot != -1)
+                        {
+                            string oldSt = input.Substring(index, indexEnd - index);
+                            string newSt = $"Totals.{func}({arg1.Substring(0, posDot)}";
+                            input = input.Remove(index, oldSt.Length);
+                            input = input.Insert(index, newSt);
+                            indexEnd += newSt.Length - oldSt.Length;
+                        }
+                    }
+                    startIndex = indexEnd + 1;
+                }
+            }
+            return input;
+        }
+
+        private static string[] aggregateFunctions = new string[] { "Avg", "Count", "Max", "Min", "Sum", "First", "Last"};
+
+        private static string RemoveLineFeedFromExpression(string input)
+        {
+            StringBuilder sb = new StringBuilder();
+            int expLevel = 0;
+            for (int index = 0; index < input.Length; index++)
+            {
+                char ch = input[index];
+                if (ch == '{')
+                {
+                    expLevel++;
+                }
+                if (ch == '}' && expLevel > 0)
+                {
+                    expLevel--;
+                }
+                if ((ch == '\r' || ch == '\n') && expLevel > 0) continue;
+                sb.Append(ch);
+            }
+            return sb.ToString();
         }
 
         private Type GetTypeFromDataType(string dataType, bool nullable)
@@ -3678,17 +3900,15 @@ namespace Stimulsoft.Report.Import
                     return (nullable ? typeof(DateTime?) : typeof(DateTime));
 
                 default:
-                    ThrowError(null, null, string.Format("DataType \"{0}\" not found.", dataType));
+                    ThrowError(null, null, $"DataType \"{dataType}\" not found.");
                     return typeof(object);
             }
         }
 
         private string MakeFullDataSetName(string baseName, string name)
         {
-            if (baseName == null)
-            {
-                return name;
-            }
+            if (baseName == null) return name;
+            if (string.IsNullOrWhiteSpace(name)) return baseName;
 
             string[] parts = baseName.Split(new char[] { ':' });
             if (parts[parts.Length - 1] == name)
