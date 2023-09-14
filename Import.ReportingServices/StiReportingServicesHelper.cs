@@ -673,8 +673,8 @@ namespace Stimulsoft.Report.Import
             {
                 if (source == "Embedded")
                 {
-                    Image image = (Image)embeddedImages[value];
-                    if (image != null) component.PutImage(image);
+                    var image = (byte[])embeddedImages[value];
+                    if (image != null) component.ImageBytes = image;
                 }
                 else if (source == "External")
                 {
@@ -2623,7 +2623,7 @@ namespace Stimulsoft.Report.Import
                     case "ImageData":
                         string imageString = Convert.ToString(GetNodeTextValue(node));
                         imageString = imageString.Replace("\r", "").Replace("\n", "");
-                        Image image = StiImageConverter.StringToImage(imageString);
+                        var image = StiImageConverter.StringToByteArray(imageString);
                         string imageName = baseNode.Attributes["Name"].Value;
                         embeddedImages[imageName] = image;
                         break;
