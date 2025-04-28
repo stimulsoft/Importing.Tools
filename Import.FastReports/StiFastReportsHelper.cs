@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2017 Stimulsoft
+#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2017 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,35 +25,51 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2017 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
-using System.Globalization;
 using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.IO;
-using System.Net.Mime;
+using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Xml;
+using Stimulsoft.Base;
 using Stimulsoft.Base.Drawing;
 using Stimulsoft.Report;
 using Stimulsoft.Report.Units;
 using Stimulsoft.Report.Components;
+using Stimulsoft.Report.Components.ShapeTypes;
 using Stimulsoft.Report.Dictionary;
 
 namespace Stimulsoft.Report.Import
 {
     public class StiFastReportsHelper
     {
-        #region Methods
-        public StiReport Convert(byte[] bytes)
-        {
+        #region Fields
+        List<string> errorList = null;
+        StiReport report = null;
+        bool isFr3 = false;
+        #endregion
 
-            StiReport report = new StiReport();
+        #region Methods
+        public StiReport Convert(byte[] bytes, List<string> errorList = null)
+        {
+            this.errorList = errorList;
+
+            report = new StiReport();
             report.Pages.Clear();
+
+            isFr3 = bytes[39] == 'T' || bytes[40] == 'T' || bytes[41] == 'T';
+            if (isFr3)
+            {
+                bytes = RemakeFR3(bytes);
+            }
 
             XmlDocument doc = new XmlDocument();
             using (var stream = new MemoryStream(bytes))
@@ -62,19 +78,58 @@ namespace Stimulsoft.Report.Import
             }
 
             XmlNodeList documentList = doc.GetElementsByTagName("Report");
-            foreach (XmlNode documentNode in documentList)
+            if (documentList.Count == 0)
+                documentList = doc.GetElementsByTagName("TfrxReport");
+            if (documentList.Count > 0)
             {
-                foreach (XmlNode elementNode in documentNode.ChildNodes)
+                var reportNode = documentList[0];
+                if (reportNode != null)
                 {
-                    switch (elementNode.Name)
-                    {
-                        case "Dictionary":
-                            ReadDictionary(elementNode, report);
-                            break;
+                    report.ReportName = reportNode.Attributes["ReportInfo.Name"]?.Value ?? "Report";
+                    report.ReportDescription = reportNode.Attributes["ReportInfo.Description"]?.Value ?? "";
+                    report.ReportAuthor = reportNode.Attributes["ReportInfo.Author"]?.Value ?? "";
+                }
 
-                        case "ReportPage":
-                            ReadPage(elementNode, report);
-                            break;
+                //first pass, assemble dictionary
+                foreach (XmlNode documentNode in documentList)
+                {
+                    foreach (XmlNode elementNode in documentNode.ChildNodes)
+                    {
+                        switch (elementNode.Name)
+                        {
+                            case "Dictionary":
+                                ReadDictionary(elementNode, report);
+                                break;
+
+                            case "ReportPage":
+                            case "TfrxReportPage":
+                                ReadPage(elementNode, report);
+                                break;
+                        }
+                    }
+                }
+                report.Pages.Clear();
+
+                //second pass
+                foreach (XmlNode documentNode in documentList)
+                {
+                    foreach (XmlNode elementNode in documentNode.ChildNodes)
+                    {
+                        switch (elementNode.Name)
+                        {
+                            case "Dictionary":
+                                //ReadDictionary(elementNode, report);
+                                break;
+
+                            case "ReportPage":
+                            case "TfrxReportPage":
+                                ReadPage(elementNode, report);
+                                break;
+
+                            default:
+                                ThrowError(documentNode.Name, elementNode.Name);
+                                break;
+                        }
                     }
                 }
             }
@@ -119,6 +174,10 @@ namespace Stimulsoft.Report.Import
 
                     case "Relation":
                         ReadRelation(elementNode, report);
+                        break;
+
+                    default:
+                        ThrowError(dictNode.Name, elementNode.Name);
                         break;
                 }
             }
@@ -408,6 +467,11 @@ namespace Stimulsoft.Report.Import
                     if (attr != null) border.ShadowBrush = new StiSolidBrush(ReadColor(node, "Border.ShadowColor"));
                     #endregion
 
+                    int sides = ReadInt(node, "Frame.Typ", comp, 0);
+                    if ((sides & 0x01) > 0) border.Side |= StiBorderSides.Left;
+                    if ((sides & 0x02) > 0) border.Side |= StiBorderSides.Top;
+                    if ((sides & 0x04) > 0) border.Side |= StiBorderSides.Right;
+                    if ((sides & 0x08) > 0) border.Side |= StiBorderSides.Bottom;
                 }
             }
             catch
@@ -505,15 +569,22 @@ namespace Stimulsoft.Report.Import
                 switch (elementNode.Name)
                 {
                     case "TextObject":
+                    case "TfrxMemoView":
                         ReadTextObject(elementNode, band);
                         break;
 
                     case "PictureObject":
+                    case "TfrxPictureView":
                         ReadPictureObject(elementNode, band);
                         break;
 
                     case "CheckBoxObject":
                         ReadCheckBoxObject(elementNode, band);
+                        break;
+
+                    case "ShapeObject":
+                    case "TfrxShapeView":
+                        ReadShapeObject(elementNode, band);
                         break;
 
                     case "LineObject":
@@ -547,7 +618,16 @@ namespace Stimulsoft.Report.Import
                     case "SubreportObject":
                         ReadSubreportObject(elementNode, band);
                         break;
+
+                    default:
+                        ThrowError(node.Name, elementNode.Name);
+                        break;
                 }
+            }
+
+            foreach (StiComponent comp in band.Components)
+            {
+                if (comp.Left > band.Width) comp.Linked = true;
             }
         }
 
@@ -557,7 +637,6 @@ namespace Stimulsoft.Report.Import
             page.Components.Add(band);
 
             ReadBand(node, band);
-
         }
 
         private void ReadReportSummaryBand(XmlNode node, StiPage page)
@@ -568,7 +647,6 @@ namespace Stimulsoft.Report.Import
             ReadBand(node, band);
 
             band.KeepReportSummaryTogether = ReadBool(node, "KeepWithData", band, false);
-
         }
 
         private void ReadChildBand(XmlNode node, StiPage page)
@@ -577,7 +655,6 @@ namespace Stimulsoft.Report.Import
             page.Components.Add(band);
 
             ReadBand(node, band);
-
         }
 
         private void ReadDataBand(XmlNode node, StiPage page, StiBand masterBand)
@@ -585,12 +662,18 @@ namespace Stimulsoft.Report.Import
             StiDataBand band = new StiDataBand();
             page.Components.Add(band);
 
-            ReadBand(node, band);
-
             band.MasterComponent = masterBand;
 
-            string dataSource = ReadString(node, "DataSource", band.Name);
+            string dataSource = ReadString(node, "DataSource", "");
+            if (string.IsNullOrEmpty(dataSource))
+                dataSource = ReadString(node, "DataSetName", "");
+            if (string.IsNullOrEmpty(dataSource))
+                dataSource = ReadString(node, "DataSet", "");
             band.DataSourceName = dataSource;
+
+            AddDataSourceName(dataSource);
+
+            ReadBand(node, band);
         }
 
         private void ReadDataHeaderBand(XmlNode node, StiPage page, StiBand masterBand)
@@ -656,7 +739,7 @@ namespace Stimulsoft.Report.Import
             ReadBand(node, band);
 
             string condition = ReadString(node, "Condition", band.Name);
-            band.Condition.Value = condition;
+            band.Condition.Value = ProcessExpression(condition);
         }
 
         private void ReadGroupFooterBand(XmlNode node, StiPage page)
@@ -692,31 +775,63 @@ namespace Stimulsoft.Report.Import
             page.Columns = ReadInt(node, "Columns.Count", page, 0);
             page.ColumnWidth = ReadValueFromMillimeters(node, "Columns.Width", page, page.ColumnWidth);
 
+            #region Sort bands by Top
+            List<XmlNode> nodes = node.ChildNodes.Cast<XmlNode>().ToList();
+            nodes.Sort((x, y) =>
+            {
+                double xTop = double.Parse(x.Attributes["Top"]?.Value ?? "0", CultureInfo.InvariantCulture);
+                double yTop = double.Parse(y.Attributes["Top"]?.Value ?? "0", CultureInfo.InvariantCulture);
+                return xTop.CompareTo(yTop);
+            });
+            foreach (XmlNode node2 in node.ChildNodes)
+            {
+                node.RemoveChild(node2);
+            }
+            foreach (XmlNode node2 in nodes)
+            {
+                node.AppendChild(node2);
+            }
+            #endregion
+
             foreach (XmlNode elementNode in node.ChildNodes)
             {
                 switch (elementNode.Name)
                 {
                     case "ReportTitleBand":
+                    case "TfrxReportTitle":
                         ReadReportTitleBand(elementNode, page);
                         break;
 
                     case "ReportSummaryBand":
+                    case "TfrxReportSummary":
                         ReadReportSummaryBand(elementNode, page);
                         break;
 
                     case "DataBand":
+                    case "TfrxMasterData":
                         ReadDataBand(elementNode, page, null);
                         break;
 
+                    case "TfrxHeader":
+                        ReadDataHeaderBand(elementNode, page, null);
+                        break;
+
+                    case "TfrxFooter":
+                        ReadDataFooterBand(elementNode, page, null);
+                        break;
+
                     case "GroupHeaderBand":
+                    case "TfrxGroupHeader":
                         ReadGroupHeaderBand(elementNode, page);
                         break;
 
                     case "PageHeaderBand":
+                    case "TfrxPageHeader":
                         ReadPageHeaderBand(elementNode, page);
                         break;
 
                     case "PageFooterBand":
+                    case "TfrxPageFooter":
                         ReadPageFooterBand(elementNode, page);
                         break;
 
@@ -726,6 +841,28 @@ namespace Stimulsoft.Report.Import
 
                     case "ColumnFooterBand":
                         ReadColumnFooterBand(elementNode, page);
+                        break;
+
+                    case "TfrxMemoView":
+                        ReadTextObject(elementNode, page);
+                        break;
+
+                    case "PictureObject":
+                    case "TfrxPictureView":
+                        ReadPictureObject(elementNode, page);
+                        break;
+
+                    case "CheckBoxObject":
+                        ReadCheckBoxObject(elementNode, page);
+                        break;
+
+                    case "ShapeObject":
+                    case "TfrxShapeView":
+                        ReadShapeObject(elementNode, page);
+                        break;
+
+                    default:
+                        ThrowError(node.Name, elementNode.Name);
                         break;
                 }
             }
@@ -748,6 +885,8 @@ namespace Stimulsoft.Report.Import
             comp.ComponentStyle = ReadString(node, "Style", "");
             comp.Bookmark.Value = ReadString(node, "Bookmark", "");
             comp.Hyperlink.Value = ReadString(node, "Hyperlink.Expression", "");
+
+            if (comp.Left < 0) comp.Linked = true;
 
             #region Dock
             switch (ReadString(node, "Dock", "None"))
@@ -891,20 +1030,19 @@ namespace Stimulsoft.Report.Import
             ReadTextBrush(node, comp);
         }
 
-        private void ReadTextObject(XmlNode node, StiBand band)
+        private void ReadTextObject(XmlNode node, StiContainer container)
         {
             StiText text = new StiText();
-            band.Components.Add(text);
+            container.Components.Add(text);
 
             ReadComp(node, text);
 
-            text.Text.Value = ReadString(node, "Text", "");
-            /*if (text.Text.Value.StartsWith("[") && text.Text.Value.EndsWith("]"))
-            {
-                text.Text.Value = "{" + text.Text.Value.Substring(1, text.Text.Value.Length - 2) + "}";
-            }*/
+            string st = ReadString(node, "Text", "");
+            text.Text.Value = ParseText(st);
 
             text.Angle = -(float)ReadDouble(node, "Angle", text, 0d);
+            if (isFr3)
+                text.Angle = (float)ReadDouble(node, "Rotation", text, text.Angle);
 
             text.LinesOfUnderline = ReadBool(node, "Underlines", text, false) ? StiPenStyle.Solid : StiPenStyle.None;
             text.AutoWidth = ReadBool(node, "AutoWidth", text, false);
@@ -968,17 +1106,20 @@ namespace Stimulsoft.Report.Import
             #endregion
 
             #region HorzAlign
-            switch (ReadString(node, "HorzAlign", ""))
+            switch (ReadString(node, isFr3 ? "HAlign" : "HorzAlign", ""))
             {
                 case "Center":
+                case "haCenter":
                     text.HorAlignment = StiTextHorAlignment.Center;
                     break;
 
                 case "Right":
+                case "haRight":
                     text.HorAlignment = StiTextHorAlignment.Right;
                     break;
 
                 case "Justify":
+                case "haJustify":
                     text.HorAlignment = StiTextHorAlignment.Width;
                     break;
 
@@ -989,13 +1130,15 @@ namespace Stimulsoft.Report.Import
             #endregion
 
             #region VertAlign
-            switch (ReadString(node, "VertAlign", ""))
+            switch (ReadString(node, isFr3 ? "VAlign" : "VertAlign", ""))
             {
                 case "Center":
+                case "vaCenter":
                     text.VertAlignment = StiVertAlignment.Center;
                     break;
 
                 case "Bottom":
+                case "vaBottom":
                     text.VertAlignment = StiVertAlignment.Bottom;
                     break;
 
@@ -1011,8 +1154,23 @@ namespace Stimulsoft.Report.Import
                 XmlAttribute attrName = node.Attributes["Font"];
                 if (attrName != null)
                 {
-                    FontConverter fontConverter = new FontConverter();
-                    text.Font = fontConverter.ConvertFromString(attrName.Value) as Font;
+                    //FontConverter fontConverter = new FontConverter();
+                    //text.Font = fontConverter.ConvertFromString(attrName.Value) as Font;
+                    text.Font = ParseFont(attrName.Value);
+                }
+                if (isFr3)
+                {
+                    var fontName = ReadString(node, "Font.Name", "");
+                    var fontSize = Math.Abs(ReadDouble(node, "Font.Height", text, 0));
+                    var fontStyleInt = ReadInt(node, "Font.Style", text, 0);
+                    if (!string.IsNullOrWhiteSpace(fontName) && fontSize > 0)
+                    {
+                        FontStyle fs = FontStyle.Regular;
+                        if ((fontStyleInt & 0x01) > 0) fs |= FontStyle.Bold;
+                        if ((fontStyleInt & 0x02) > 0) fs |= FontStyle.Italic;
+
+                        text.Font = new Font(fontName, (float)fontSize, fs);
+                    }
                 }
             }
             catch
@@ -1021,32 +1179,67 @@ namespace Stimulsoft.Report.Import
             #endregion
         }
 
-        private void ReadPictureObject(XmlNode node, StiBand band)
+        private void ReadPictureObject(XmlNode node, StiContainer container)
         {
             StiImage image = new StiImage();
-            band.Components.Add(image);
+            container.Components.Add(image);
 
             ReadComp(node, image);
 
             image.DataColumn = ReadString(node, "DataColumn", "");
+
+            string hex = ReadString(node, "Picture.PropData", "");
+            if (!string.IsNullOrWhiteSpace(hex))
+            {
+                int length = hex.Length;
+                byte[] bytes = new byte[length / 2];
+                for (int i = 0; i < length; i += 2)
+                {
+                    bytes[i / 2] = System.Convert.ToByte(hex.Substring(i, 2), 16);
+                }
+
+                try
+                {
+                    var image2 = System.Drawing.Image.FromStream(new MemoryStream(bytes));
+                    //if image is loaded - then assign it to component
+                    image.ImageBytes = bytes;
+                }
+                catch { }
+            }
         }
 
-        private void ReadCheckBoxObject(XmlNode node, StiBand band)
+        private void ReadCheckBoxObject(XmlNode node, StiContainer container)
         {
             StiCheckBox checkBox = new StiCheckBox();
-            band.Components.Add(checkBox);
+            container.Components.Add(checkBox);
 
             ReadComp(node, checkBox);
 
             checkBox.Checked.Value = "{" + ReadString(node, "DataColumn", "") + "}";
         }
 
-        private void ReadLineObject(XmlNode node, StiBand band)
+        private void ReadLineObject(XmlNode node, StiContainer container)
         {
             StiHorizontalLinePrimitive line = new StiHorizontalLinePrimitive();
-            band.Components.Add(line);
+            container.Components.Add(line);
 
             ReadComp(node, line);
+        }
+
+        private void ReadShapeObject(XmlNode node, StiContainer container)
+        {
+            var shape = new StiShape();
+            container.Components.Add(shape);
+
+            ReadComp(node, shape);
+
+            var stType = ReadString(node, "Shape", "");
+            if (stType == "skTriangle") shape.ShapeType = new StiTriangleShapeType();
+            if (stType == "skRoundRectangle") shape.ShapeType = new StiRoundedRectangleShapeType();
+            if (stType == "skEllipse") shape.ShapeType = new StiOvalShapeType();
+            if (stType == "skRectangle") shape.ShapeType = new StiRectangleShapeType();
+            if (stType == "skDiamond") shape.ShapeType = new StiFlowchartDecisionShapeType();
+            if (stType == "skCircle") shape.ShapeType = new StiOvalShapeType();
         }
 
         private void ReadSubreportObject(XmlNode node, StiContainer parent)
@@ -1058,6 +1251,266 @@ namespace Stimulsoft.Report.Import
         }
         #endregion
 
+        #region Methods.Utils
+        private StiDataSource AddDataSourceName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return null;
+
+            var ds = report.Dictionary.DataSources[name];
+            if (ds != null) return ds;
+
+            ds = new StiDataTableSource(name, name);
+            report.Dictionary.DataSources.Add(ds);
+            return ds;
+        }
+
+        private void AddDataSourceField(string dataSourceName, string dataSourceField)
+        {
+            var ds = AddDataSourceName(dataSourceName);
+            if (ds == null) return;
+
+            var field = ds.Columns[dataSourceField];
+            if (field != null) return;
+
+            field = new StiDataColumn(dataSourceField);
+            ds.Columns.Add(field);
+        }
+
+        private string ParseText(string inputText)
+        {
+            StringBuilder output = new StringBuilder();
+            StringBuilder sb = new StringBuilder();
+
+            int level = 0;
+            for (int index = 0; index < inputText.Length; index++)
+            {
+                char c = inputText[index];
+                if (level > 0)
+                {
+                    if (c == '[')
+                    {
+                        level++;
+                    }
+                    if (c == ']')
+                    {
+                        level--;
+                    }
+                    if (level == 0)
+                    {
+                        output.Append("{" + ProcessExpression(sb.ToString()) + "}");
+                        sb.Clear();
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                }
+                else
+                {
+                    if (c == '[')
+                    {
+                        level++;
+                    }
+                    else
+                    {
+                        output.Append(c);
+                    }
+                }
+            }
+
+            if (sb.Length > 0) 
+                output.Append("[" + sb);
+
+            return output.ToString();
+        }
+
+        private string ProcessExpression(string baseInput)
+        {
+            string input = baseInput.Trim();
+
+            if (input == "Page") input = "PageNumber";
+            if (input == "TotalPages") input = "TotalPagesCount";
+            if (input == "PageN") input = "\"Page \" + PageNumber";
+            if (input == "Page#") input = "PageNumberThrough";
+            if (input == "TotalPages#") input = "TotalPagesCountThrough";
+            if (input == "Line#") input = "Line";
+
+            input = input.Replace("Report.ReportInfo.Name", "ReportName");
+            input = input.Replace("Report.ReportInfo.Description", "ReportDescription");
+            input = input.Replace("Report.ReportInfo.Author", "ReportAuthor");
+
+            foreach(StiDataSource ds in report.Dictionary.DataSources)
+            {
+                int pos = 0;
+                while ((pos = input.IndexOf(ds.Name, pos)) != -1) 
+                {
+                    int pos2 = pos + ds.Name.Length;
+                    if ((pos2 < input.Length) && (input.Substring(pos2, 2) == ".\""))
+                    {
+                        pos2 += 2;
+                        int pos3 = input.IndexOf("\"", pos2);
+                        if (pos3 != -1)
+                        {
+                            var fieldName = input.Substring(pos2, pos3 - pos2);
+                            AddDataSourceField(ds.Name, fieldName);
+
+                            var newName = ds.Name + "." + fieldName;
+                            pos3++;
+                            if ((pos > 0) && (input[pos - 1] == '<')) pos--;
+                            if ((pos3 < input.Length) && (input[pos3] == '>')) pos3++;
+
+                            input = input.Substring(0, pos) + newName + input.Substring(pos3);
+                            pos += newName.Length;
+                        }
+                    }
+                    else
+                        pos++;
+                }
+            }
+
+            return input;
+        }
+
+        private Font ParseFont(string fontString)
+        {
+            if (string.IsNullOrWhiteSpace(fontString))
+                return new Font("Arial", 8);
+
+            string[] parts = fontString.Split(',');
+
+            string fontName = parts[0].Trim();
+            float fontSize = 8;
+            FontStyle fontStyle = FontStyle.Regular;
+            GraphicsUnit fontUnit = GraphicsUnit.Point;
+
+            if (parts.Length > 1)
+            {
+                string sizePart = parts[1].Trim();
+                string numberPart = Regex.Replace(sizePart, @"^(?<number>\d+(\.\d+)?)[a-zA-Z]*$", "${number}");
+                if (sizePart.EndsWith("pt", StringComparison.OrdinalIgnoreCase)) fontUnit = GraphicsUnit.Point;
+                if (sizePart.EndsWith("px", StringComparison.OrdinalIgnoreCase)) fontUnit = GraphicsUnit.Pixel;
+                fontSize = float.Parse(numberPart, CultureInfo.InvariantCulture);
+            }
+
+            if (parts.Length > 2)
+            {
+                string stylePart = parts[2].Trim();
+                if (stylePart.StartsWith("style=", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    if (stylePart.IndexOf("bold", StringComparison.InvariantCultureIgnoreCase) != -1) fontStyle |= FontStyle.Bold;
+                    if (stylePart.IndexOf("italic", StringComparison.InvariantCultureIgnoreCase) != -1) fontStyle |= FontStyle.Bold;
+                    if (stylePart.IndexOf("underline", StringComparison.InvariantCultureIgnoreCase) != -1) fontStyle |= FontStyle.Bold;
+                    if (stylePart.IndexOf("strikeout", StringComparison.InvariantCultureIgnoreCase) != -1) fontStyle |= FontStyle.Bold;
+                }
+            }
+
+            return new Font(fontName, fontSize, fontStyle, fontUnit);
+        }
+
+        private void ThrowError(string baseNodeName, string nodeName)
+        {
+            ThrowError(string.Format("Node not found: {0}.{1}", baseNodeName, nodeName));
+        }
+
+        private void ThrowError(string message)
+        {
+            errorList.Add(message);
+        }
+
+        private byte[] RemakeFR3(byte[] data)
+        {
+            StringBuilder sb = new StringBuilder();
+
+            int last = 0;
+            for (int index = 0; index < data.Length; index++)
+            {
+                byte b = data[index];
+                if (b == '<') last = index + 1;
+                if (b == '>')
+                {
+                    sb.Append(ParseOneLine(data, last, index - last) + "\r\n");
+                }
+            }
+
+            return Encoding.UTF8.GetBytes(sb.ToString());
+        }
+
+        private string ParseOneLine(byte[] data, int start, int len)
+        {
+            int dataLen = start + len;
+            var name = new StringBuilder();
+            int index = start;
+            while (index < dataLen && data[index] != ' ')
+            {
+                name.Append((char)data[index]);
+                index++;
+            }
+
+            while (index < dataLen && data[index] == ' ') index++;
+
+            List<KeyValuePair<string, string>> attrs = new List<KeyValuePair<string, string>>();
+            while (index < dataLen)
+            {
+                var attrName = new StringBuilder();
+                while (index < dataLen && (data[index] != ' ' && data[index] != '='))
+                {
+                    attrName.Append((char)data[index]);
+                    index++;
+                }
+
+                while (index < dataLen && data[index] == ' ') index++;
+
+                string attrValue = null;
+                if (data[index] == '=')
+                {
+                    index++;
+                    while (index < dataLen && data[index] == ' ') index++;
+                    if (data[index] != '\"') throw new Exception("No quotes!");
+                    index++;
+                    int last = index;
+                    while (index < dataLen && data[index] != '\"') index++;
+
+                    attrValue = GetStringEncoding(data, last, index - last, attrName.ToString());
+                    index++;
+                    while (index < dataLen && data[index] == ' ') index++;
+                }
+
+                attrs.Add(new KeyValuePair<string, string>(attrName.ToString(), attrValue));
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.Append("<");
+            sb.Append(name + " ");
+            foreach (KeyValuePair<string, string> attr in attrs)
+            {
+                sb.Append(attr.Key);
+                if (attr.Value != null)
+                {
+                    sb.Append("=\"" + attr.Value + "\"");
+                }
+                sb.Append(" ");
+            }            
+
+            string st = sb.ToString().Trim() + ">";
+
+            return st;
+        }
+
+        private string GetStringEncoding(byte[] data, int start, int len, string attrName)
+        {
+            string st = null;
+            if (attrName == "Text")
+            {
+                st = Encoding.UTF8.GetString(data, start, len);
+            }
+            else
+            {
+                st = Encoding.GetEncoding(1251).GetString(data, start, len);
+            }
+            return st;
+        }
+        #endregion
+
         #region Methods.Import
         public static StiImportResult Import(byte[] bytes)
         {
@@ -1065,12 +1518,13 @@ namespace Stimulsoft.Report.Import
 
             try
             {
-                Thread.CurrentThread.CurrentCulture = new CultureInfo("en-US", false);
+                Thread.CurrentThread.CurrentCulture = StiCultureInfo.GetEN(false);
 
+                var errorList = new List<string>();
                 var helper = new StiFastReportsHelper();
-                var report = helper.Convert(bytes);
+                var report = helper.Convert(bytes, errorList);
 
-                return new StiImportResult(report, null);
+                return new StiImportResult(report, errorList);
             }
             finally
             {

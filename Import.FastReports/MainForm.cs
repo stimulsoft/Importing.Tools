@@ -10,6 +10,7 @@ using Stimulsoft.Report;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Base;
 using Stimulsoft.Report.Import;
+using System.Collections.Generic;
 
 namespace Import.FastReports
 {
@@ -239,8 +240,8 @@ namespace Import.FastReports
 
         private void btnBrowseRpx_Click(object sender, EventArgs e)
         {
-            openFileDialog1.Title = "Select FastReport.Net file";
-            openFileDialog1.Filter = "FastReport.Net file (*.frx)|*.frx";
+            openFileDialog1.Title = "Select FastReport file";
+            openFileDialog1.Filter = "FastReport file (*.frx,*.fr3)|*.frx;*.fr3";
 
             if (openFileDialog1.ShowDialog() == DialogResult.OK)
             {
@@ -294,8 +295,9 @@ namespace Import.FastReports
                 log.OpenLog("Converting ...");
                 Application.DoEvents();
 
+                var errorList = new List<string>();
                 StiFastReportsHelper helper = new StiFastReportsHelper();
-                StiReport report = helper.Convert(buf);
+                StiReport report = helper.Convert(buf, errorList);
 
                 log.CurrentNode.Text += "OK";
                 log.CloseLog();
@@ -305,7 +307,16 @@ namespace Import.FastReports
 
                 log.CurrentNode.Text += "OK";
 
-                //MessageBox.Show("Conversion complete!");
+#if Test
+                log.OpenLog("Conversion errors:");
+                foreach (string st in errorList)
+                {
+                    log.WriteNode(st);
+                }
+                log.CloseLog();
+
+                report.Design();
+#endif
             }
         }
 
