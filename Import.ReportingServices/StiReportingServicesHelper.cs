@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2023 Stimulsoft
+#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2023 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2023 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.Collections;
@@ -43,13 +43,15 @@ using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Dictionary;
 using Stimulsoft.Report.Units;
 using Stimulsoft.Report.Components.TextFormats;
+using System.Data;
+using Stimulsoft.Base;
 
 namespace Stimulsoft.Report.Import
 {
     public class StiReportingServicesHelper
     {
         #region Fields
-        private ArrayList errorList = null;
+        private List<string> errorList = null;
         private StiUnit unitType = new StiHundredthsOfInchUnit();
         private StiText lastTextComponent = null;
         private List<string> methods = new List<string>();
@@ -61,7 +63,7 @@ namespace Stimulsoft.Report.Import
         #endregion
 
         #region Process Root node
-        public void ProcessRootNode(XmlNode rootNode, StiReport report, ArrayList errorList)
+        public void ProcessRootNode(XmlNode rootNode, StiReport report, List<string> errorList)
         {
             this.report = report;
             this.errorList = errorList;
@@ -367,7 +369,7 @@ namespace Stimulsoft.Report.Import
         #endregion
 
         #region ReportSections
-        private void ProcessReportSections(XmlNode baseNode, StiReport report, ArrayList errorList)
+        private void ProcessReportSections(XmlNode baseNode, StiReport report, List<string> errorList)
         {
             StiPagesCollection pages = new StiPagesCollection(report);
 
@@ -1648,22 +1650,24 @@ namespace Stimulsoft.Report.Import
         #endregion
 
         #region Tablix
-        private void ProcessTablixType(XmlNode baseNode, StiContainer container, StiPage page, string dataset)
+        private void ProcessTablixType(XmlNode baseNode, StiContainer baseContainer, StiPage page, string dataset)
         {
-            StiPanel component = new StiPanel();
-            component.Name = CheckComponentName(page.Report, baseNode.Attributes["Name"].Value);
-            component.Border = new StiAdvancedBorder();
-            component.Page = page;
-            component.CanGrow = true;
+            StiPanel container = new StiPanel();
+			container.Name = CheckComponentName(page.Report, baseNode.Attributes["Name"].Value);
+			container.Border = new StiAdvancedBorder();
+			container.Page = page;
+			container.CanGrow = true;
+            container.CanBreak = true;
 
             string datasetName = null;
             string fullDatasetName = null;
-            StringBuilder groupExpression = new StringBuilder();
-            List<bool> rowsHierarchy = new List<bool>();
             StiFiltersCollection filters = null;
+            string[] sortExpr = null;
 
-            //first pass - get dataset name
-            foreach (XmlNode node in baseNode.ChildNodes)
+            GroupsInfo rowsHierarchy = new GroupsInfo() { Page = page };
+
+			//first pass - get dataset name
+			foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
                 {
@@ -1672,16 +1676,18 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     case "TablixRowHierarchy":
-                        ProcessTablixRowHierarchyType(node, groupExpression, dataset, rowsHierarchy);
+                        ProcessTablixRowHierarchyType(node, dataset, rowsHierarchy);
                         break;
-                }
-            }
 
-            if (rowsHierarchy == null) rowsHierarchy = new List<bool>();
+					case "SortExpressions":
+						sortExpr = ProcessTablixSortExpressionsType(node, datasetName);
+						break;
+				}
+            }
 
             fullDatasetName = MakeFullDataSetName(dataset, datasetName);
 
-            ArrayList tableColumns = new ArrayList();
+            List<double> tableColumnsWidths = new List<double>();
             ArrayList tableDetails = new ArrayList();
 
             //second pass
@@ -1690,24 +1696,24 @@ namespace Stimulsoft.Report.Import
                 switch (node.Name)
                 {
                     case "Left":
-                        component.Left = ToHi(GetNodeTextValue(node));
+						container.Left = ToHi(GetNodeTextValue(node));
                         break;
                     case "Top":
-                        component.Top = ToHi(GetNodeTextValue(node));
+						container.Top = ToHi(GetNodeTextValue(node));
                         break;
                     case "Width":
-                        component.Width = ToHi(GetNodeTextValue(node));
+						container.Width = ToHi(GetNodeTextValue(node));
                         break;
                     case "Height":
-                        component.Height = ToHi(GetNodeTextValue(node));
+						container.Height = ToHi(GetNodeTextValue(node));
                         break;
 
                     case "Style":
-                        ProcessStyleType(node, component);
+                        ProcessStyleType(node, container);
                         break;
 
                     case "TablixBody":
-                        ProcessTablixBodyType(node, container, page, fullDatasetName, tableColumns, tableDetails, rowsHierarchy);
+                        ProcessTablixBodyType(node, page, fullDatasetName, tableColumnsWidths, tableDetails);
                         break;
 
                     case "Filters":
@@ -1727,77 +1733,163 @@ namespace Stimulsoft.Report.Import
                 }
             }
 
-            if (groupExpression.Length > 0)
+            //add bands
+            if (rowsHierarchy.HeaderLines.Count > 0)
+				AddTablixCellsToContainer(rowsHierarchy, tableColumnsWidths, tableDetails, new StiHeaderBand() { PrintIfEmpty = true }, rowsHierarchy.HeaderLines, container);
+
+            for (int groupIndex = 0; groupIndex < rowsHierarchy.Levels.Count; groupIndex++)
             {
-                StiGroupHeaderBand groupBand = new StiGroupHeaderBand() { Name = "Group_" + component.Name, Condition = new StiGroupConditionExpression(groupExpression.ToString()) };
-                component.Components.Add(groupBand);
+                var group = rowsHierarchy.Levels[groupIndex];
+                var groupHeader = new StiGroupHeaderBand();
+                groupHeader.Condition = new StiGroupConditionExpression("{" + group.GroupExpression + "}");
+                AddTablixCellsToContainer(rowsHierarchy, tableColumnsWidths, tableDetails, groupHeader, group.HeaderLines, container);
             }
 
-            for (int index = 0; index < tableDetails.Count; index++)
+            var dataBand = new StiDataBand();
+            dataBand.DataSourceName = datasetName;
+            if (sortExpr != null && sortExpr.Length > 0)
+                dataBand.Sort = sortExpr;
+			if (filters != null) dataBand.Filters = filters;
+			AddTablixCellsToContainer(rowsHierarchy, tableColumnsWidths, tableDetails, dataBand, rowsHierarchy.DataLines, container);
+
+            bool needGroupFooters = false;
+			for (int groupIndex = 0; groupIndex < rowsHierarchy.Levels.Count; groupIndex++)
+			{
+                if (rowsHierarchy.Levels[groupIndex].FooterLines.Count > 0) needGroupFooters = true;
+			}
+            if (needGroupFooters)
             {
-                StiBand band = tableDetails[index] as StiBand;
-                StiDataBand db = band as StiDataBand;
-                if (db != null)
+                for (int groupIndex = 0; groupIndex < rowsHierarchy.Levels.Count; groupIndex++)
                 {
-                    if (((index < rowsHierarchy.Count) && rowsHierarchy[index]) || (rowsHierarchy.Count == 0))
-                    {
-                        db.DataSourceName = datasetName;
-                        if (filters != null) db.Filters = filters;
-                    }
-                    else
-                    {
-                        db.CountData = 1;
-                    }
-                }
-                component.Components.Add(band);
-            }
-
-            foreach (StiBand band in component.Components)
-            {
-                if (band is StiGroupHeaderBand) continue;
-
-                double offset = 0;
-                int indexComp = 0;
-                for (int index = 0; index < tableColumns.Count; index++)
-                {
-                    StiComponent comp = band.Components[indexComp++];
-
-                    int colspan = 0;
-                    if (comp.TagValue != null)
-                    {
-                        colspan = Convert.ToInt32(comp.TagValue) - 1;
-                    }
-                    decimal cellWidth = (decimal)tableColumns[index];
-                    while (colspan > 0)
-                    {
-                        index++;
-                        cellWidth += (decimal)tableColumns[index];
-                        colspan--;
-                    }
-
-                    comp.Left = offset;
-                    comp.Width = (double)cellWidth;
-                    comp.Height = band.Height;
-                    offset += (double)cellWidth;
+                    var group = rowsHierarchy.Levels[rowsHierarchy.Levels.Count - 1 - groupIndex];
+                    AddTablixCellsToContainer(rowsHierarchy, tableColumnsWidths, tableDetails, new StiGroupFooterBand(), group.FooterLines, container);
                 }
             }
 
-            container.Components.Add(component);
+			if (rowsHierarchy.FooterLines.Count > 0)
+				AddTablixCellsToContainer(rowsHierarchy, tableColumnsWidths, tableDetails, new StiFooterBand() { PrintIfEmpty = true }, rowsHierarchy.FooterLines, container);
+
+			baseContainer.Components.Add(container);
         }
 
-        private void ProcessTablixBodyType(XmlNode baseNode, StiContainer container, StiPage page, string dataset, ArrayList tableColumns, ArrayList tableDetails, List<bool> rowsHierarchy)
+        private void AddTablixCellsToContainer(GroupsInfo rowsHierarchy, List<double> tableColumnsWidths, ArrayList tableDetails, StiBand baseBand, List<int> lines, StiContainer baseContainer)
+		{
+			baseContainer.Components.Add(baseBand);
+
+			baseBand.Locked = true;
+            baseBand.Height = 0;
+            double offsetY = 0;
+
+			for (int indexLine = 0; indexLine < lines.Count; indexLine++)
+            {
+                int lineIndex = lines[indexLine];
+				var container = tableDetails[lineIndex] as StiPanel;
+
+				double offset = 0;
+				int indexComp = 0;
+				for (int index = 0; index < tableColumnsWidths.Count; index++)
+				{
+					StiComponent comp = container.Components[indexComp++];
+
+					int colspan = 0;
+					if (comp.TagValue != null)
+					{
+						colspan = Convert.ToInt32(comp.TagValue) - 1;
+					}
+					decimal cellWidth = (decimal)tableColumnsWidths[index];
+					while (colspan > 0)
+					{
+						index++;
+						cellWidth += (decimal)tableColumnsWidths[index];
+						colspan--;
+					}
+
+					comp.Left = offset;
+					comp.Width = (double)cellWidth;
+					comp.Height = container.Height;
+					offset += (double)cellWidth;
+				}
+
+				if (rowsHierarchy.cells[lineIndex].Count > 0)
+				{
+					offset = 0;
+					for (int index2 = 0; index2 < rowsHierarchy.cells[lineIndex].Count; index2++)
+					{
+						var cont = rowsHierarchy.cells[lineIndex][index2];
+						if (cont != null)
+						{
+							var comp = cont.Components[0];
+                            comp.Left = offset;
+							comp.Width = cont.Width;
+							comp.Height = container.Height;
+							container.Components.Insert(index2, comp);
+							offset += cont.Width;
+						}
+					}
+                    for (int index3 = rowsHierarchy.cells[lineIndex].Count; index3 < container.Components.Count; index3++)
+                    {
+                        container.Components[index3].Left += offset;
+                    }
+				}
+
+                for (int index = 0; index < container.Components.Count; index++)
+                {
+                    container.Components[index].GrowToHeight = true;
+                }
+
+				if (lines.Count > 1)
+                {
+                    container.Name = baseBand.Name + "_c" + indexLine.ToString();
+                    container.Width = baseContainer.Width;
+                    container.Top = offsetY;
+                    offsetY += container.Height;
+					baseBand.Components.Add(container);
+				}
+                else
+                {
+					baseBand.Components.AddRange(container.Components);
+				}
+				baseBand.Height += container.Height;
+			}
+		}
+
+		private class GroupLevelInfo
+        {
+            public List<int> HeaderLines = new List<int>();
+			public List<int> FooterLines = new List<int>();
+            public bool HasNestedGroup = false;
+			public string GroupName = string.Empty;
+            public string GroupExpression = string.Empty;
+            public string[] SortExpression = null;  //not used in current revision
+            public List<int> Lines = new List<int>();
+		}
+
+        private class GroupsInfo
+        {
+            public List<GroupLevelInfo> Levels = new List<GroupLevelInfo>();
+            public int Line = 0;
+            public int Column = 0;
+            public List<List<StiContainer>> cells = new List<List<StiContainer>>();
+            public List<string> LineTypes = new List<string>();
+            public StiPage Page = null;
+			public List<int> HeaderLines = new List<int>();
+			public List<int> FooterLines = new List<int>();
+			public List<int> DataLines = new List<int>();
+		}
+
+		private void ProcessTablixBodyType(XmlNode baseNode, StiPage page, string dataset, List<double> tableColumns, ArrayList tableDetails)
         {
             foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
                 {
                     case "TablixColumns":
-                        ArrayList tableColumns2 = ProcessTablixColumnsType(node);
+                        var tableColumns2 = ProcessTablixColumnsType(node);
                         tableColumns.AddRange(tableColumns2);
                         break;
 
                     case "TablixRows":
-                        ArrayList tableDetails2 = ProcessTablixRowsType(node, container, page, dataset, rowsHierarchy);
+                        ArrayList tableDetails2 = ProcessTablixRowsType(node, page, dataset);
                         tableDetails.AddRange(tableDetails2);
                         break;
 
@@ -1812,18 +1904,15 @@ namespace Stimulsoft.Report.Import
             }
         }
 
-
-
-        private ArrayList ProcessTablixRowsType(XmlNode baseNode, StiContainer container, StiPage page, string dataset, List<bool> rowsHierarchy)
+        private ArrayList ProcessTablixRowsType(XmlNode baseNode, StiPage page, string dataset)
         {
             ArrayList list = new ArrayList();
-            int index = 0;
             foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
                 {
                     case "TablixRow":
-                        list.Add(ProcessTablixRowType(node, container, page, GetRowType(index++, rowsHierarchy), dataset));
+                        list.Add(ProcessTablixRowType(node, page, dataset));
                         break;
 
                     default:
@@ -1834,64 +1923,23 @@ namespace Stimulsoft.Report.Import
             return list;
         }
 
-        private StiBand GetRowType(int rowIndex, List<bool> rowsHierarchy)
+        private StiComponent ProcessTablixRowType(XmlNode baseNode, StiPage page, string dataset)
         {
-            StiBand[] types = new StiBand[rowsHierarchy.Count];
-            bool flag1 = false;
-            for (int index = 0; index < rowsHierarchy.Count; index++)
-            {
-                if (flag1 == false)
-                {
-                    if (rowsHierarchy[index] == true)
-                    {
-                        flag1 = true;
-                        types[index] = new StiDataBand();
-                    }
-                    else
-                    {
-                        types[index] = new StiHeaderBand();
-                    }
-                }
-                else
-                {
-                    if (rowsHierarchy[index] == true)
-                    {
-                        types[index] = new StiDataBand();
-                    }
-                    else
-                    {
-                        types[index] = new StiFooterBand();
-                    }
-                }
-            }
+            StiPanel container = new StiPanel();
 
-            if (flag1 && (rowIndex < types.Length))
-            {
-                return types[rowIndex];
-            }
-            return new StiDataBand();
-        }
-
-        private StiBand ProcessTablixRowType(XmlNode baseNode, StiContainer container, StiPage page, StiBand bandType, string dataset)
-        {
-            StiBand component = null;
-            if (bandType is StiHeaderBand) component = new StiHeaderBand() { PrintIfEmpty = true };
-            if (bandType is StiDataBand) component = new StiDataBand();
-            if (bandType is StiFooterBand) component = new StiFooterBand();
-
-            component.Page = page;
-            component.CanGrow = true;
+			container.Page = page;
+			container.CanGrow = true;
 
             foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
                 {
                     case "TablixCells":
-                        ProcessTablixCellsType(node, component, page, dataset);
+                        ProcessTablixCellsType(node, container, page, dataset);
                         break;
 
                     case "Height":
-                        component.Height = ToHi(GetNodeTextValue(node));
+						container.Height = ToHi(GetNodeTextValue(node));
                         break;
 
                     default:
@@ -1899,7 +1947,7 @@ namespace Stimulsoft.Report.Import
                         break;
                 }
             }
-            return component;
+            return container;
         }
 
         private void ProcessTablixCellsType(XmlNode baseNode, StiContainer container, StiPage page, string dataset)
@@ -1937,16 +1985,15 @@ namespace Stimulsoft.Report.Import
             }
         }
 
-
-        private ArrayList ProcessTablixColumnsType(XmlNode baseNode)
+        private List<double> ProcessTablixColumnsType(XmlNode baseNode)
         {
-            ArrayList list = new ArrayList();
-            foreach (XmlNode node in baseNode.ChildNodes)
+            var list = new List<double>();
+			foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
                 {
                     case "TablixColumn":
-                        list.Add((decimal)ProcessTableColumnType(node));
+                        list.Add(ProcessTablixColumnType(node));
                         break;
 
                     default:
@@ -1968,12 +2015,6 @@ namespace Stimulsoft.Report.Import
                         width = ToHi(GetNodeTextValue(node));
                         break;
 
-                    //-----<xsd:complexType name="TableColumnType">
-                    //<xsd:element name="Width" type="SizeType"/>
-
-                    //<xsd:element name="Visibility" type="VisibilityType" minOccurs="0"/>
-                    //<xsd:element name="FixedHeader" type="xsd:boolean" minOccurs="0"/>
-
                     default:
                         ThrowError(baseNode.Name, node.Name);
                         break;
@@ -1982,15 +2023,14 @@ namespace Stimulsoft.Report.Import
             return width;
         }
 
-
-        private void ProcessTablixRowHierarchyType(XmlNode baseNode, StringBuilder groupExpression, string dataSet, List<bool> rowsHierarchy)
+        private void ProcessTablixRowHierarchyType(XmlNode baseNode, string dataSet, GroupsInfo groupsLevels)
         {
             foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
                 {
                     case "TablixMembers":
-                        ProcessTablixMembersType(node, rowsHierarchy, groupExpression, dataSet, false);
+                        ProcessTablixMembersType(node, dataSet, groupsLevels, null, false);
                         break;
 
                     default:
@@ -1998,42 +2038,123 @@ namespace Stimulsoft.Report.Import
                         break;
                 }
             }
-        }
 
-        private void ProcessTablixMembersType(XmlNode baseNode, List<bool> rowsHierarchy, StringBuilder groupExpression, string dataSet, bool needAddMembers)
-        {
-            foreach (XmlNode node in baseNode.ChildNodes)
+            if (groupsLevels.Levels.Count > 0)
+			{
+				var fg = groupsLevels.Levels[0];
+				for (int index = 0; index < fg.Lines[0]; index++)
+                {
+					groupsLevels.HeaderLines.Add(index);
+					groupsLevels.LineTypes[index] = "h";
+				}
+				for (int index = fg.Lines[fg.Lines.Count - 1] + 1; index < groupsLevels.LineTypes.Count; index++)
+				{
+					groupsLevels.FooterLines.Add(index);
+					groupsLevels.LineTypes[index] = "f";
+				}
+			}
+            if (groupsLevels.Levels.Count > 0)
             {
-                switch (node.Name)
+                GroupLevelInfo group = groupsLevels.Levels[groupsLevels.Levels.Count - 1];
+                if (group.GroupExpression.Length == 0)
+                {
+                    //change last group to data
+                    foreach (int line in group.Lines)
+                    {
+                        groupsLevels.LineTypes[line] = "d";
+                    }
+                    groupsLevels.DataLines.AddRange(group.Lines);
+                    groupsLevels.Levels.Remove(group);
+                }
+                else
+                {
+                    //no data lines, only groupheader
+                    group.HeaderLines.AddRange(group.Lines);
+                }
+            }			
+
+		}
+
+        private void ProcessTablixMembersType(XmlNode baseNode, string dataSet, GroupsInfo groupsInfo, GroupLevelInfo group, bool incrementColumn)
+        {
+            int column = groupsInfo.Column + (incrementColumn ? 1 : 0);
+            bool hasGroup = false;
+			foreach (XmlNode node in baseNode.ChildNodes)
+            {
+                groupsInfo.Column = column;
+				int currentLine = groupsInfo.Line;
+				bool isGroup = false;
+
+				switch (node.Name)
                 {
                     case "TablixMember":
-                        ProcessTablixMemberType(node, rowsHierarchy, groupExpression, dataSet, needAddMembers);
+                        isGroup = ProcessTablixMemberType(node, dataSet, groupsInfo, group);
                         break;
 
                     default:
                         ThrowError(baseNode.Name, node.Name);
                         break;
                 }
-            }
-        }
 
-        private void ProcessTablixMemberType(XmlNode baseNode, List<bool> rowsHierarchy, StringBuilder groupExpression, string dataSet, bool needAddMembers)
+				if (group != null && isGroup) group.HasNestedGroup = true;
+                hasGroup |= isGroup;
+
+				if (!isGroup)
+				{
+					if (group != null)
+					{
+						if (!group.HasNestedGroup)
+						{
+							group.HeaderLines.Add(currentLine);
+							groupsInfo.LineTypes[currentLine] = "gh";
+						}
+						else
+						{
+							group.FooterLines.Add(currentLine);
+							groupsInfo.LineTypes[currentLine] = "gf";
+						}
+					}				
+				}
+
+			}
+		}
+
+        private bool ProcessTablixMemberType(XmlNode baseNode, string dataSet, GroupsInfo groupsInfo, GroupLevelInfo baseGroup)
         {
-            var tempRowsHierarchy = new List<bool>();
-            bool haveMembers = false;
+            CheckCells(groupsInfo, groupsInfo.Line, -1);
+            /*if (groupsInfo.Line + 1 > groupsInfo.cells.Count)
+            {
+                groupsInfo.cells.Add(new List<StiComponent>());
+            }*/
+
+            bool hasHeader = false;
+            bool hasMembers = false;
+            GroupLevelInfo group = null;
+            int currentLine = groupsInfo.Line;
+            int currentColumn = groupsInfo.Column;
 
             foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
                 {
                     case "Group":
-                        ProcessTablixGroupType(node, groupExpression, dataSet);
-                        haveMembers = true;
+                        group = ProcessTablixGroupType(node, dataSet, groupsInfo);
+                        //hasGroup = true;
+                        //if (baseGroup != null) baseGroup.HasNestedGroup = true;
+                        break;
+
+                    case "SortExpressions":
+						group.SortExpression = ProcessTablixSortExpressionsType(node, dataSet);
+						break;
+
+                    case "TablixHeader":
+                        ProcessTablixHeaderType(node, dataSet, groupsInfo);
+                        hasHeader = true;
                         break;
 
                     case "TablixMembers":
-                        ProcessTablixMembersType(node, needAddMembers ? tempRowsHierarchy : rowsHierarchy, groupExpression, dataSet, true);
-                        haveMembers = true;
+                        ProcessTablixMembersType(node, dataSet, groupsInfo, group, hasHeader);
+                        hasMembers = true;
                         break;
 
                     case "KeepWithGroup":
@@ -2048,18 +2169,56 @@ namespace Stimulsoft.Report.Import
                         break;
                 }
             }
-            if (needAddMembers) rowsHierarchy.Add(haveMembers);
+
+            //duplicate textbox for all groupheader
+            if (hasHeader && (groupsInfo.Line > currentLine) && (groupsInfo.cells[currentLine][currentColumn] != null))
+            {
+                for (int index = currentLine + 1; index < groupsInfo.Line; index++)
+                {
+                    CheckCells(groupsInfo, index, currentColumn);
+
+                    var cont = groupsInfo.cells[currentLine][currentColumn];
+					var newCont = new StiPanel() { Width = cont.Width };
+
+                    var newComp = cont.Components[0].Clone() as StiComponent;
+                    newComp.Name += "_" + index.ToString();
+                    (newComp as StiText).ProcessingDuplicates = StiProcessingDuplicatesType.GlobalMerge;
+
+                    newCont.Components.Add(newComp);
+					groupsInfo.cells[index][currentColumn] = newCont;
+				}
+                (groupsInfo.cells[currentLine][currentColumn].Components[0] as StiText).ProcessingDuplicates = StiProcessingDuplicatesType.GlobalMerge;
+			}		
+
+			if (/* (group == null) && !hasHeader || */ !hasMembers)
+            {
+                groupsInfo.Line++;
+            }
+
+			if (group != null)
+			{
+				for (int index = currentLine; index < groupsInfo.Line; index++)
+				{
+					group.Lines.Add(index);
+				}
+			}
+
+			return group != null;
         }
 
 
-        private void ProcessTablixGroupType(XmlNode baseNode, StringBuilder groupExpression, string dataSet)
+		private GroupLevelInfo ProcessTablixGroupType(XmlNode baseNode, string dataSet, GroupsInfo groupsInfo)
         {
+			GroupLevelInfo group = new GroupLevelInfo();
+			groupsInfo.Levels.Add(group);
+			//group.IsGroup = true;
+
             foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
                 {
                     case "GroupExpressions":
-                        ProcessGroupExpressionsType(node, groupExpression, dataSet);
+                        ProcessGroupExpressionsType(node, dataSet, group);
                         break;
 
                     default:
@@ -2067,8 +2226,10 @@ namespace Stimulsoft.Report.Import
                         break;
                 }
             }
+            return group;
         }
-        private void ProcessGroupExpressionsType(XmlNode baseNode, StringBuilder groupExpression, string dataSet)
+
+        private void ProcessGroupExpressionsType(XmlNode baseNode, string dataSet, GroupLevelInfo group)
         {
             foreach (XmlNode node in baseNode.ChildNodes)
             {
@@ -2076,11 +2237,11 @@ namespace Stimulsoft.Report.Import
                 {
                     case "GroupExpression":
                         string st = ConvertExpression(GetNodeTextValue(node), dataSet);
-                        if (groupExpression.Length > 0)
+                        if (group.GroupExpression.Length > 0)
                         {
-                            groupExpression.Append(".ToString() + ");
+							group.GroupExpression += ".ToString() + ";      //!!! todo - check what comes here
                         }
-                        groupExpression.Append(st.Substring(1, st.Length - 2));
+						group.GroupExpression += st.Substring(1, st.Length - 2);
                         break;
 
                     default:
@@ -2090,10 +2251,94 @@ namespace Stimulsoft.Report.Import
             }
         }
 
-        #endregion
+		private string[] ProcessTablixSortExpressionsType(XmlNode baseNode, string dataSet)
+		{
+            List<string> sort = new List<string>();
+			foreach (XmlNode node in baseNode.ChildNodes)
+			{
+				switch (node.Name)
+				{
+					case "SortExpression":
+						ProcessTablixSortExpressionType(node, dataSet, sort);
+						break;
 
-        #region Subreport
-        private void ProcessSubreportType(XmlNode baseNode, StiContainer container, StiPage page, string dataset)
+					default:
+						ThrowError(baseNode.Name, node.Name);
+						break;
+				}
+			}
+            return sort.ToArray();
+		}
+
+		private void ProcessTablixSortExpressionType(XmlNode baseNode, string dataSet, List<string> sort)
+		{
+            string expr = string.Empty;
+            string direction = "ASC";
+			foreach (XmlNode node in baseNode.ChildNodes)
+			{
+				switch (node.Name)
+				{
+					case "Value":
+						expr = ConvertExpression(GetNodeTextValue(node), dataSet);
+						break;
+
+					case "Direction":
+						string st = GetNodeTextValue(node);
+                        if (st == "Descending") direction = "DESC";
+						break;
+
+					default:
+						ThrowError(baseNode.Name, node.Name);
+						break;
+				}
+			}
+            if (expr.Length > 0)
+            {
+                sort.Add(direction);
+                sort.Add(expr);
+            }
+		}
+
+		private void ProcessTablixHeaderType(XmlNode baseNode, string dataSet, GroupsInfo groupsInfo)
+		{
+            double size = 0;
+			foreach (XmlNode node in baseNode.ChildNodes)
+			{
+				switch (node.Name)
+				{
+					case "Size":
+						size = ToHi(GetNodeTextValue(node));
+						break;
+
+					case "CellContents":
+                        var cont = new StiContainer() { Name = $"Cont{groupsInfo.Line}*{groupsInfo.Column}" };
+                        cont.Width = size;
+						ProcessReportItemsType(node, cont, groupsInfo.Page, dataSet);
+						CheckCells(groupsInfo, groupsInfo.Line, groupsInfo.Column);
+                        groupsInfo.cells[groupsInfo.Line][groupsInfo.Column] = cont;
+						break;
+
+					default:
+						ThrowError(baseNode.Name, node.Name);
+						break;
+				}
+			}
+		}
+
+        private void CheckCells(GroupsInfo groupsInfo, int line, int column)
+        {
+			for (int index = 0; index <= line; index++)
+			{
+                if (groupsInfo.cells.Count <= line) groupsInfo.cells.Add(new List<StiContainer>());
+				while (groupsInfo.cells[index].Count <= column) groupsInfo.cells[index].Add(null);
+
+                if (groupsInfo.LineTypes.Count <= line) groupsInfo.LineTypes.Add(string.Empty);
+			}
+		}
+		#endregion
+
+		#region Subreport
+		private void ProcessSubreportType(XmlNode baseNode, StiContainer container, StiPage page, string dataset)
         {
             StiSubReport component = new StiSubReport();
             component.Name = CheckComponentName(page.Report, baseNode.Attributes["Name"].Value);
@@ -2296,14 +2541,18 @@ namespace Stimulsoft.Report.Import
                         connectString = Convert.ToString(GetNodeTextValue(node));
                         break;
 
-                    //-----<xsd:complexType name="ConnectionPropertiesType">
-                    //<xsd:element name="DataProvider" type="xsd:string"/>
-                    //<xsd:element name="ConnectString" type="xsd:string"/>
+					case "IntegratedSecurity":
+						var st = Convert.ToString(GetNodeTextValue(node)).ToLowerInvariant();
+                        if (st == "true") connectString += ";Integrated Security=True";
+						break;
 
-                    //<xsd:element name="IntegratedSecurity" type="xsd:boolean" minOccurs="0"/>
-                    //<xsd:element name="Prompt" type="xsd:string" minOccurs="0"/>
+					//-----<xsd:complexType name="ConnectionPropertiesType">
+					//<xsd:element name="DataProvider" type="xsd:string"/>
+					//<xsd:element name="ConnectString" type="xsd:string"/>
 
-                    default:
+					//<xsd:element name="Prompt" type="xsd:string" minOccurs="0"/>
+
+					default:
                         ThrowError(baseNode.Name, node.Name);
                         break;
                 }
@@ -3720,7 +3969,7 @@ namespace Stimulsoft.Report.Import
             {
                 size = unitType.ConvertFromHInches(size);
             }
-            return Math.Round(size, 2);
+            return (double)Math.Round((decimal)size, 2);
         }
 
         private void ThrowError(string baseNodeName, string nodeName)
@@ -3927,12 +4176,12 @@ namespace Stimulsoft.Report.Import
 
             try
             {
-                Thread.CurrentThread.CurrentCulture = new CultureInfo("en-US", false);
+                Thread.CurrentThread.CurrentCulture = StiCultureInfo.GetEN(false);
 
                 ApplicationDecimalSeparator = Thread.CurrentThread.CurrentCulture.NumberFormat.NumberDecimalSeparator;
 
                 var report = new StiReport();
-                var errors = new ArrayList();
+                var errors = new List<string>();
                 var doc = new XmlDocument();
 
                 using (var stream = new MemoryStream(bytes))

@@ -10,6 +10,7 @@ using Stimulsoft.Report;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Base;
 using Stimulsoft.Report.Import;
+using System.Collections.Generic;
 
 namespace Import.Rdl
 {
@@ -358,7 +359,7 @@ namespace Import.Rdl
                 Application.DoEvents();
 
                 StiReportingServicesHelper helper = new StiReportingServicesHelper() { ConvertSyntaxToCSharp = checkBoxConvertSyntaxToCSharp.Checked };
-                ArrayList errorList = new ArrayList();
+                var errorList = new List<string>();
                 helper.ProcessRootNode(doc.DocumentElement, report, errorList);
 
                 if (checkBoxSetLinked.Checked)
@@ -379,17 +380,13 @@ namespace Import.Rdl
 
                 #if Test
                 log.OpenLog("Conversion errors:");
-                foreach (string st in result.Errors)
+                foreach (string st in errorList)
                 {
                     log.WriteNode(st);
                 }
                 log.CloseLog();
-                #endif
-
-                MessageBox.Show("Conversion complete!");
-
-                #if Test
-                result.Report.Design();
+                
+                report.Design();
                 #endif
             }
         }
