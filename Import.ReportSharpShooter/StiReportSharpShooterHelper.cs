@@ -178,6 +178,10 @@ namespace Stimulsoft.Report.Import
                     if (!ignoreLeftMargin)
                         comp.Left -= page.Margins.Left;
 
+                    if (!(parent is StiPage) && (comp.Left < 0 || comp.Top < 0))
+                    {
+                        comp.Linked = true;
+                    }
                     //comp.Top -= page.Margins.Top;
                 }
             }
@@ -646,7 +650,7 @@ namespace Stimulsoft.Report.Import
                     sizeSt = sizeSt.Substring(0, sizeSt.Length - 2);
                 }
 
-                var size = (float)ParseDouble(sizeSt.Replace(".", CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator));
+                var size = (float)ParseDouble(sizeSt);
 
                 FontStyle fs = FontStyle.Regular;
                 if (strs.Length > 2)
@@ -669,13 +673,12 @@ namespace Stimulsoft.Report.Import
 
         private Color ReadColor(XmlNode node, string key, Color defaultColor)
         {
-            ColorConverter colorConverter = new ColorConverter();
             try
             {
                 if (node.Attributes[key] == null)
                     return defaultColor;
 
-                return (Color)colorConverter.ConvertFromString(node.Attributes[key].Value);
+                return ReadColor(node.Attributes[key].Value);
             }
             catch
             {
@@ -685,9 +688,17 @@ namespace Stimulsoft.Report.Import
 
         private Color ReadColor(string name)
         {
-            ColorConverter colorConverter = new ColorConverter();
             try
             {
+                if (name.Contains(","))
+                {
+                    var arr = name.Split(',');
+                    if (arr.Length == 3)
+                        return ReadColor(arr[0], arr[1], arr[2]);
+                    if (arr.Length == 4)
+                        return ReadColor(arr[1], arr[2], arr[3], arr[0]);
+                }
+                ColorConverter colorConverter = new ColorConverter();
                 return (Color)colorConverter.ConvertFromString(name);
             }
             catch
@@ -695,14 +706,19 @@ namespace Stimulsoft.Report.Import
             }
             return Color.Black;
         }
-        private Color ReadColor(string s1, string s2, string s3)
+
+        private Color ReadColor(string s1, string s2, string s3, string alpha = null)
         {
             try
             {
                 int i1 = int.Parse(s1.Replace(",", "").Replace(".", ""));
                 int i2 = int.Parse(s2.Replace(",", "").Replace(".", ""));
                 int i3 = int.Parse(s3.Replace(",", "").Replace(".", ""));
-                return Color.FromArgb(i1, i2, i3);
+
+                int i0 = 255; 
+                if (alpha != null) i0 = int.Parse(alpha.Replace(",", "").Replace(".", ""));
+
+                return Color.FromArgb(i0, i1, i2, i3);
             }
             catch
             {
@@ -1069,6 +1085,18 @@ namespace Stimulsoft.Report.Import
 
             return format;
         }
+
+        private void ReadBitmap(XmlNode node, StiComponent comp)
+        {
+            string st = node.ChildNodes[0].Value;
+            var bytes = System.Convert.FromBase64String(st);
+
+            var image = comp as StiImage;
+            if (image != null)
+            {
+                image.ImageBytes = bytes;
+            }
+        }
         #endregion
 
         #region Methods.Read.Bands
@@ -1248,6 +1276,48 @@ namespace Stimulsoft.Report.Import
 
             currentDataSourceName = storeDataSourceName;
             currentDatabandName = storeDatabandName;
+        }
+
+        private void ReadBandContainer(XmlNode node, StiContainer cont)
+        {
+            string oldStyle = currentStyleName;
+            if (importStyleNames)
+            {
+                string componentStyle = ReadString(node, "StyleName", "");
+                if (!string.IsNullOrEmpty(componentStyle))
+                    currentStyleName = componentStyle;
+            }
+
+            StiContainer container = new StiContainer();
+            container.Name = containerName;
+            ReadProperties(node, container, true);
+
+            if (container.Conditions.Count > 0)
+            {
+                foreach (StiComponent comp in container.Components)
+                {
+                    comp.Conditions.AddRange(container.Conditions);
+                }
+            }
+
+            if (cont is StiPage)
+            {
+                cont.Components.AddRange(container.Components);
+            }
+            else
+            {
+                cont.Components.Add(container);
+            }
+
+            currentStyleName = oldStyle;
+        }
+
+        private void ReadPageOverlay(XmlNode node, StiContainer cont)
+        {
+            StiOverlayBand band = new StiOverlayBand();
+            cont.Components.Add(band);
+
+            ReadBand(node, band);
         }
 
         private void ReadHeaderBand(XmlNode node, StiContainer cont, StiBand masterBand)
@@ -1575,6 +1645,10 @@ namespace Stimulsoft.Report.Import
                             {
                                 ((StiText)comp).Text.Value = "{" + ParseExpression(attr2.Value) + "}";
                             }
+                            if ((comp is StiRichText) && (attr3.Value == "RTFText"))
+                            {
+                                ((StiRichText)comp).DataColumn = ParseExpression(attr2.Value);
+                            }
                             if ((comp is StiGroupHeaderBand) && (attr3.Value == "Group"))
                             {
                                 ((StiGroupHeaderBand)comp).Condition.Value = "{" + ParseExpression(attr2.Value) + "}";
@@ -1636,6 +1710,10 @@ namespace Stimulsoft.Report.Import
 
                     case "ShapeStyle":
                         ReadShapeStyle(elementNode, comp);
+                        break;
+
+                    case "Image":
+                        ReadBitmap(elementNode, comp);
                         break;
 
                     default:
@@ -1727,6 +1805,16 @@ namespace Stimulsoft.Report.Import
                         ReadCrossBand(elementNode, cont, null);
                         break;
 
+                    case "PerpetuumSoft.Reporting.DOM.BandContainer":
+                    case "NineRays.Reporting.DOM.BandContainer":
+                        ReadBandContainer(elementNode, cont);
+                        break;
+
+                    case "PerpetuumSoft.Reporting.DOM.PageOverlay":
+                    case "NineRays.Reporting.DOM.PageOverlay":
+                        ReadPageOverlay(elementNode, cont);
+                        break;
+
                     case "PerpetuumSoft.Reporting.DOM.TextBox":
                     case "NineRays.Reporting.DOM.TextBox":
                         ReadTextBox(elementNode, cont);
@@ -1735,6 +1823,11 @@ namespace Stimulsoft.Report.Import
                     case "PerpetuumSoft.Reporting.DOM.AdvancedText":
                     case "NineRays.Reporting.DOM.AdvancedText":
                         ReadTextBox(elementNode, cont, true);
+                        break;
+
+                    case "PerpetuumSoft.Reporting.DOM.RichText":
+                    case "NineRays.Reporting.DOM.RichText":
+                        ReadRichText(elementNode, cont);
                         break;
 
                     case "PerpetuumSoft.Reporting.DOM.Picture":
@@ -1882,9 +1975,20 @@ namespace Stimulsoft.Report.Import
             }
         }
 
+        private void ReadRichText(XmlNode node, StiContainer cont)
+        {
+            StiRichText text = new StiRichText();
+            cont.Components.Add(text);
+
+            text.Text.Value = ReadString(node, "Text", "");
+
+            ReadComp(node, text);
+        }
+
         private void ReadPictureObject(XmlNode node, StiContainer cont)
         {
             StiImage image = new StiImage();
+            image.Stretch = true;
             cont.Components.Add(image);
 
             ReadComp(node, image);
@@ -2169,6 +2273,10 @@ namespace Stimulsoft.Report.Import
                     barcode.BarCodeType = new StiPdf417BarCodeType();
                     break;
 
+                case "QRCode":
+                    barcode.BarCodeType = new StiQRCodeBarCodeType();
+                    break;
+
                 default:
                     ThrowError("BarCodeType", codeType);
                     break;
@@ -2256,7 +2364,6 @@ namespace Stimulsoft.Report.Import
                         }
                         Get_DataColumn(parts[parts.Length - 1], ds);
 
-                        //проверить - так для всех версий формата или только для каких-то определённых, NineRays или PerpetuumSoft //!!!todo
                         expr = ds.Name + "." + parts[parts.Length - 1];
                     }
                     else
