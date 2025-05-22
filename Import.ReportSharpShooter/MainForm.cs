@@ -10,6 +10,7 @@ using Stimulsoft.Report;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Import;
 using Stimulsoft.Base;
+using System.Collections.Generic;
 
 namespace Import.ReportSharpShooter
 {
@@ -238,6 +239,7 @@ namespace Import.ReportSharpShooter
             this.checkBoxImportStyleNames.TabIndex = 0;
             this.checkBoxImportStyleNames.Text = "Import style names";
             this.checkBoxImportStyleNames.UseVisualStyleBackColor = true;
+            this.checkBoxImportStyleNames.Checked = true;
             // 
             // Form1
             // 
@@ -325,8 +327,9 @@ namespace Import.ReportSharpShooter
 
                 byte[] buf = File.ReadAllBytes(tbRssFile.Text);
 
+                var errorList = new List<string>();
                 StiReportSharpShooterHelper helper = new StiReportSharpShooterHelper();
-                StiReport report = helper.Convert(buf, checkBoxImportStyleNames.Checked);
+                StiReport report = helper.Convert(buf, checkBoxImportStyleNames.Checked, null, errorList);
 
                 log.CurrentNode.Text += "OK";
                 log.CloseLog();
@@ -336,11 +339,18 @@ namespace Import.ReportSharpShooter
 
                 log.CurrentNode.Text += "OK";
 
+#if Test
+                log.OpenLog("Conversion errors:");
+                foreach (string st in errorList)
+                {
+                    log.WriteNode(st);
+                }
+                log.CloseLog();
+
                 MessageBox.Show("Conversion complete!");
 
-                #if Test
                 report.Design();
-                #endif
+#endif
             }
         }
 
