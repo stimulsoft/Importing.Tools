@@ -217,6 +217,12 @@ namespace Stimulsoft.Report.Import
             }
             #endregion
 
+            foreach (StiPage page in report.Pages)
+            {
+                page.DockToContainer();
+                page.Correct();
+            }
+
             return report;
         }
 
