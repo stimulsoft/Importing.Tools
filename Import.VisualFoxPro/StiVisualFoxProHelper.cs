@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2017 Stimulsoft
+#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2017 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2017 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.Collections;
@@ -204,7 +204,7 @@ namespace Stimulsoft.Report.Import
             double fontSize = GetInt("FONTSIZE");
             if (!string.IsNullOrWhiteSpace(fontFamily) && (fontSize > 0))
                 return new Font(fontFamily, (float)fontSize, fs);
-            return new Font("Microsoft Sans Serif", 8);
+            return new Font("Arial", 8);
         }
 
         private Color GetPenColor()
@@ -525,7 +525,7 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     case ObjType.RectangleOrShape:
-                        //проверять - если есть заливка - то надо Shape
+                        //check - if fill present - then need Shape
                         StiRectanglePrimitive rectangle = null;
                         int offset = GetInt("OFFSET");
                         if (offset == 0)
@@ -692,7 +692,7 @@ namespace Stimulsoft.Report.Import
 
             try
             {
-                Thread.CurrentThread.CurrentCulture = new CultureInfo("en-US", false);
+                Thread.CurrentThread.CurrentCulture = StiCultureInfo.GetEN(false);
 
                 DataTable visualFoxPro;
                 using (var dataStream = new MemoryStream(dataBytes))

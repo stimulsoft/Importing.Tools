@@ -1,10 +1,10 @@
-﻿#region Copyright (C) 2003-2017 Stimulsoft
+﻿#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2017 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2017 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.Collections;
@@ -44,7 +44,7 @@ namespace Stimulsoft.Report.Import
 
         private static string[] errorsList = {
             "Syntax error",        //0
-            "Integral constant is too large",    //1        значение целочисленной константы слишком велико
+            "Integral constant is too large",    //1
             "The expression is empty",             //2
             "Division by zero",              //3
             "Unexpected end of expression",  //4
@@ -84,8 +84,6 @@ namespace Stimulsoft.Report.Import
             NoMatchingOverloadedMethod = 17
         }
 
-
-        // Отображение сообщения о синтаксической ошибке
         private void ThrowError(ParserErrorCode code)
         {
             ThrowError(code, null, string.Empty, string.Empty, string.Empty, string.Empty);

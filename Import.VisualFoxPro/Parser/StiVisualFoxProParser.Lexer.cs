@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2017 Stimulsoft
+#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2017 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2017 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.Collections;
@@ -43,10 +43,9 @@ namespace Stimulsoft.Report.Import
         #region Lexer
 
         #region GetNextLexem
-        // Получение очередной лексемы.
         private StiToken GetNextLexem()
         {
-            //пропустить пробелы, символы табуляции и другие незначащие символы
+            //skip spaces, tabs and other insignificant characters
             while (position < inputExpression.Length && isWhiteSpace(inputExpression[position])) position++;
             if (position >= inputExpression.Length) return null;
 
@@ -450,11 +449,11 @@ namespace Stimulsoft.Report.Import
                     #region check for DataSource field
                     if (ds != null)
                     {
-                        StringBuilder fieldPath = new StringBuilder(StiNameValidator.CorrectName(token.Value));
+                        StringBuilder fieldPath = new StringBuilder(StiNameValidator.CorrectName(token.Value, report));
                         while (tokenPos + 1 < tokensList.Count && tokensList[tokenPos].Type == StiTokenType.Dot)
                         {
                             token = tokensList[tokenPos + 1];
-                            string nextName = StiNameValidator.CorrectName(token.Value);
+                            string nextName = StiNameValidator.CorrectName(token.Value, report);
 
                             StiDataRelation dr = GetDataRelationByName(nextName, ds);
                             if (dr != null)
@@ -474,7 +473,7 @@ namespace Stimulsoft.Report.Import
                             }
                             foreach (StiDataColumn column in ds.Columns)
                             {
-                                if (StiNameValidator.CorrectName(column.Name) == nextName)
+                                if (StiNameValidator.CorrectName(column.Name, report) == nextName)
                                 {
                                     tokenPos += 2;
                                     fieldPath.Append(".");
@@ -492,7 +491,7 @@ namespace Stimulsoft.Report.Import
                             break;
                         }
                         token.Type = StiTokenType.DataSourceField;
-                        //надо оптимизировать и сохранять сразу массив строк !!!!!
+                        //need to optimize and save the array of strings at once !!!!!
                         token.Value = fieldPath.ToString();
                     }
                     #endregion
@@ -525,7 +524,7 @@ namespace Stimulsoft.Report.Import
                             break;
                         }
                         token.Type = StiTokenType.BusinessObjectField;
-                        //надо оптимизировать и сохранять сразу массив строк !!!!!
+                        //need to optimize and save the array of strings at once !!!!!
                         token.Value = fieldPath.ToString();
                     }
                     #endregion
@@ -642,10 +641,10 @@ namespace Stimulsoft.Report.Import
                     {
                         if ((tokenPos < tokensList.Count) && (tokensList[tokenPos].Type != StiTokenType.Dot) || (tokenPos == tokensList.Count))
                         {
-                            CheckDataSourceField(defaultDataSourceName, token.Value);
+                            CheckDataSourceField(DefaultDataSourceName, token.Value);
 
                             token.Type = StiTokenType.DataSourceField;
-                            token.Value = defaultDataSourceName + "." + token.Value;
+                            token.Value = DefaultDataSourceName + "." + token.Value;
                         }
                         else
                         {

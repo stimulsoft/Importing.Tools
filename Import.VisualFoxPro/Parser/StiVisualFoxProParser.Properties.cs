@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2017 Stimulsoft
+#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2017 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2017 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.Collections;
@@ -369,8 +369,7 @@ namespace Stimulsoft.Report.Import
             }
         }
 
-        // список параметров функций, которые не надо вычислять сразу, 
-        // а оставлять в виде кода для последующего вычисления
+        // a list of function parameters that do not need to be calculated immediately, but left as code for subsequent calculation
         private static Hashtable parametersList = null;
         private static Hashtable ParametersList
         {

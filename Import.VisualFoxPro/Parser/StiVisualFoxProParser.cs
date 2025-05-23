@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2017 Stimulsoft
+#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2017 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2017 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.Data;
@@ -37,12 +37,13 @@ using Stimulsoft.Report;
 using Stimulsoft.Report.Dictionary;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Engine;
+using Stimulsoft.Report.Helpers;
 
 namespace Stimulsoft.Report.Import
 {
     public partial class StiVisualFoxProParser
     {
-        #region Structures
+        #region class StiParserData
         public class StiParserData
         {
             public object Data = null;
@@ -66,7 +67,9 @@ namespace Stimulsoft.Report.Import
                 this.ConditionAsmList = conditionAsmList;
             }
         }
+        #endregion
 
+        #region class StiFilterParserData
         public class StiFilterParserData
         {
             public StiComponent Component;
@@ -78,7 +81,9 @@ namespace Stimulsoft.Report.Import
                 this.Expression = expression;
             }
         }
+        #endregion
 
+        #region class StiToken
         public class StiToken
         {
             public StiTokenType Type = StiTokenType.Empty;
@@ -112,7 +117,9 @@ namespace Stimulsoft.Report.Import
                 return string.Format("TokenType={0}{1}", Type.ToString(), Value != null ? string.Format(", value=\"{0}\"", Value) : "");
             }
         }
+        #endregion
 
+        #region class StiAsmCommand
         public class StiAsmCommand
         {
             public StiAsmCommandType Type;
@@ -166,7 +173,9 @@ namespace Stimulsoft.Report.Import
                 return param.ToString();
             }
         }
+        #endregion
 
+        #region class StiParserMethodInfo
         public class StiParserMethodInfo
         {
             public StiFunctionType Name;
@@ -193,6 +202,8 @@ namespace Stimulsoft.Report.Import
         }
         #endregion
 
+        public string DefaultDataSourceName { get; set; } = "dataTable";
+
         #region Fields
         private StiReport report = null;
         private string inputExpression = string.Empty;
@@ -209,7 +220,7 @@ namespace Stimulsoft.Report.Import
         private int expressionPosition = 0;
         #endregion
  
-        #region ParseTextValue
+        #region Methods.ParseTextValue
         public static object ParseTextValue(string inputExpression, StiComponent component)
         {
             bool storeToPrint = false;
@@ -243,29 +254,18 @@ namespace Stimulsoft.Report.Import
 
         public static object ParseTextValue(string inputExpression, StiComponent component, object sender, ref bool storeToPrint, bool executeIfStoreToPrint, bool returnAsmList, StiVisualFoxProParser parser)
         {
-            if (string.IsNullOrEmpty(inputExpression)) return null;
+            if (string.IsNullOrEmpty(inputExpression)) 
+                return null;
+
             if (parser == null)
-            {
                 parser = new StiVisualFoxProParser();
-            }
+            
             parser.report = component.Report;
             parser.component = component;
             parser.sender = sender;
             List<StiAsmCommand> list = null;
-            StiEngine engine = component.Report.Engine;
-            string expressionId = inputExpression + component.Name;
-
-            //if (engine != null)
-            //{
-            //    if (engine.parserConversionStore == null)
-            //    {
-            //        engine.parserConversionStore = new Hashtable();
-            //    }
-            //    if (engine.parserConversionStore.Contains(expressionId))
-            //    {
-            //        list = (List<StiAsmCommand>)engine.parserConversionStore[expressionId];
-            //    }
-            //}
+            var engine = component.Report.Engine;
+            var expressionId = inputExpression + component.Name;
 
             if (list == null)
             {
@@ -341,22 +341,14 @@ namespace Stimulsoft.Report.Import
                 }
                 catch
                 {
-                    //if (engine != null)
-                    //{
-                    //    engine.parserConversionStore[expressionId] = new List<StiAsmCommand>();
-                    //}
-                    //throw ex;
                     return inputExpression;
                 }
-                //if (engine != null)
-                //{
-                //    engine.parserConversionStore[expressionId] = list;
-                //}
             }
 
-            if (returnAsmList) return list;
+            if (returnAsmList) 
+                return list;
 
-            string result = parser.MakeOutput(list);
+            var result = parser.MakeOutput(list);
 
             return result;
         }
@@ -371,26 +363,23 @@ namespace Stimulsoft.Report.Import
         }
         #endregion
 
-        #region Check for DataBandsUsedInPageTotals
+        #region Methods.Check for DataBandsUsedInPageTotals
         internal static void CheckForDataBandsUsedInPageTotals(StiText stiText)
         {
             try
             {
-                StiReport report = stiText.Report;
-                bool storeToPrint = false;
-                object result = ParseTextValue(stiText.Text.Value, stiText, ref storeToPrint, false, true);
+                var report = stiText.Report;
+                var storeToPrint = false;
+                ParseTextValue(stiText.Text.Value, stiText, ref storeToPrint, false, true);
             }
             catch (Exception ex)
             {
-                string str = string.Format("Expression in Text property of '{0}' can't be evaluated! {1}", stiText.Name, ex.Message);
-                StiLogService.Write(stiText.GetType(), str);
-                StiLogService.Write(stiText.GetType(), ex.Message);
-                stiText.Report.WriteToReportRenderingMessages(str);
+                ex.Log(stiText, "Text");
             }
         }
         #endregion
 
-        #region Prepare variable value
+        #region Methods.Prepare variable value
         internal static object PrepareVariableValue(StiVariable var, StiReport report, StiText textBox = null)
         {
             if (textBox == null)
@@ -412,7 +401,7 @@ namespace Stimulsoft.Report.Import
                 }
                 else
                 {
-                    obj = StiVisualFoxProParser.ParseTextValue("{" + var.Value + "}", textBox);
+                    obj = ParseTextValue("{" + var.Value + "}", textBox);
                 }
             }
             else
@@ -428,8 +417,8 @@ namespace Stimulsoft.Report.Import
                     }
                     else
                     {
-                        range.FromObject = StiVisualFoxProParser.ParseTextValue("{" + var.InitByExpressionFrom + "}", textBox);
-                        range.ToObject = StiVisualFoxProParser.ParseTextValue("{" + var.InitByExpressionTo + "}", textBox);
+                        range.FromObject = ParseTextValue("{" + var.InitByExpressionFrom + "}", textBox);
+                        range.ToObject = ParseTextValue("{" + var.InitByExpressionTo + "}", textBox);
                     }
                 }
             }
@@ -439,9 +428,7 @@ namespace Stimulsoft.Report.Import
 
             return obj;
         }
-        #endregion
-
-        public string defaultDataSourceName = "dataTable";
+        #endregion        
 
     }
 }

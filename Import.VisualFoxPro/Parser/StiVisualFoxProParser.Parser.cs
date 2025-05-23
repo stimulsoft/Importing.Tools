@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2017 Stimulsoft
+#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2017 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2017 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.Collections;
@@ -40,20 +40,20 @@ namespace Stimulsoft.Report.Import
         #region Parser
 
         //----------------------------------------
-        // Точка входа анализатора
+        // Entry point
         //----------------------------------------
         private void eval_exp()
         {
             tokenPos = 0;
             if (tokensList.Count == 0)
             {
-                ThrowError(ParserErrorCode.ExpressionIsEmpty);  //пустое выражение
+                ThrowError(ParserErrorCode.ExpressionIsEmpty);
                 return;
             }
             eval_exp0();
             if (tokenPos <= tokensList.Count)
             {
-                ThrowError(ParserErrorCode.UnprocessedLexemesRemain);  // остаются необработанные лексемы
+                ThrowError(ParserErrorCode.UnprocessedLexemesRemain);
             }
         }
 
@@ -65,7 +65,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Обработка присваивания
+        // Assignment
         //----------------------------------------
         private void eval_exp01()
         {
@@ -99,7 +99,7 @@ namespace Stimulsoft.Report.Import
             {
                 get_token();
                 eval_exp10();
-                if (currentToken.Type != StiTokenType.Colon) ThrowError(ParserErrorCode.SyntaxError, currentToken);  //cинтаксическая ошибка
+                if (currentToken.Type != StiTokenType.Colon) ThrowError(ParserErrorCode.SyntaxError, currentToken);
                 get_token();
                 eval_exp10();
                 asmList.Add(new StiAsmCommand(StiAsmCommandType.PushFunction, StiFunctionType.IIF, 3));
@@ -108,7 +108,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Логическое ИЛИ
+        // Logical OR
         //----------------------------------------
         private void eval_exp10()
         {
@@ -122,7 +122,7 @@ namespace Stimulsoft.Report.Import
         }
 
         //----------------------------------------
-        // Логическое И
+        // Logical AND
         //----------------------------------------
         private void eval_exp11()
         {
@@ -136,7 +136,7 @@ namespace Stimulsoft.Report.Import
         }
 
         //----------------------------------------
-        // Бинарное ИЛИ
+        // Binary OR
         //----------------------------------------
         private void eval_exp12()
         {
@@ -150,7 +150,7 @@ namespace Stimulsoft.Report.Import
         }
 
         //----------------------------------------
-        // Бинарное исключающее ИЛИ
+        // Binary XOR
         //----------------------------------------
         private void eval_exp14()
         {
@@ -164,7 +164,7 @@ namespace Stimulsoft.Report.Import
         }
 
         //----------------------------------------
-        // Бинарное И
+        // Binary AND
         //----------------------------------------
         private void eval_exp15()
         {
@@ -233,7 +233,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Сложение или вычитание двух слагаемых
+        // Addition or subtraction of two terms
         //----------------------------------------
         private void eval_exp2()
         {
@@ -256,7 +256,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Умножение или деление двух множителей
+        // Multiplication or division of two factors
         //----------------------------------------
         private void eval_exp3()
         {
@@ -283,7 +283,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Операция $
+        // Operation $
         //----------------------------------------
         private void eval_exp34()
         {
@@ -298,7 +298,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Возведение в степень
+        // Exponentiation
         //----------------------------------------
         private void eval_exp4()
         {
@@ -313,7 +313,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Вычисление унарного + и -
+        // Calculating unary sign + and -
         //----------------------------------------
         private void eval_exp5()
         {
@@ -333,7 +333,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Обработка выражения в скобках
+        // Processing expression in parentheses
         //----------------------------------------
         private void eval_exp6()
         {
@@ -346,7 +346,7 @@ namespace Stimulsoft.Report.Import
                     get_token();
                     if (currentToken.Type != StiTokenType.RParenthesis)
                     {
-                        ThrowError(ParserErrorCode.RightParenthesisExpected);  //несбалансированные скобки
+                        ThrowError(ParserErrorCode.RightParenthesisExpected);  //unbalanced parentheses
                     }
                     get_token();
                     eval_exp5();
@@ -357,7 +357,7 @@ namespace Stimulsoft.Report.Import
                     eval_exp1();
                     if (currentToken.Type != StiTokenType.RParenthesis)
                     {
-                        ThrowError(ParserErrorCode.RightParenthesisExpected);  //несбалансированные скобки
+                        ThrowError(ParserErrorCode.RightParenthesisExpected);  //unbalanced parentheses
                     }
                     asmList.Add(new StiAsmCommand(StiAsmCommandType.Bracers));  //for info only
                     get_token();
@@ -380,7 +380,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Обработка индексов
+        // Process indexes
         //----------------------------------------
         private void eval_exp62()
         {
@@ -395,7 +395,7 @@ namespace Stimulsoft.Report.Import
                 }
                 if (currentToken.Type != StiTokenType.RBracket)
                 {
-                    ThrowError(ParserErrorCode.SyntaxError, currentToken);  //несбалансированные квадратные скобки  //!!!
+                    ThrowError(ParserErrorCode.SyntaxError, currentToken);  //unbalanced square brackets  //!!!
                 }
                 asmList.Add(new StiAsmCommand(StiAsmCommandType.PushArrayElement, argsCount + 1));
                 get_token();
@@ -417,7 +417,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Вычисление методов и свойств
+        // Computing methods and properties
         //----------------------------------------
         private void eval_exp7()
         {
@@ -435,7 +435,7 @@ namespace Stimulsoft.Report.Import
 
 
         //----------------------------------------
-        // Получение значения числа или переменной
+        // Getting the value of a number or variable
         //----------------------------------------
         private void atom()
         {
@@ -508,15 +508,15 @@ namespace Stimulsoft.Report.Import
             {
                 if (currentToken.Type == StiTokenType.Empty)
                 {
-                    ThrowError(ParserErrorCode.UnexpectedEndOfExpression);  //неожиданный конец выражения
+                    ThrowError(ParserErrorCode.UnexpectedEndOfExpression);
                 }
-                ThrowError(ParserErrorCode.SyntaxError, currentToken);  //cинтаксическая ошибка
+                ThrowError(ParserErrorCode.SyntaxError, currentToken);
             }
         }
 
 
         //----------------------------------------
-        // Получение аргументов функции
+        // Getting function arguments
         //----------------------------------------
         private int get_args_count(object name)
         {
@@ -525,7 +525,7 @@ namespace Stimulsoft.Report.Import
             //If aggregateComponent is not specified, search it
             var func = (StiFunctionType)name;
 
-            //проверяем какие параметры надо оставить в виде выражений
+            //we check which parameters should be left as expressions
             int bitsValue = 0;
             if (ParametersList.Contains(name)) bitsValue = (int)ParametersList[name];
             int bitsCounter = 1;
@@ -550,11 +550,11 @@ namespace Stimulsoft.Report.Import
             var args = new List<List<StiAsmCommand>>();
 
             get_token();
-            if (currentToken.Type != StiTokenType.LParenthesis) ThrowError(ParserErrorCode.LeftParenthesisExpected);   //ожидается открывающая скобка
+            if (currentToken.Type != StiTokenType.LParenthesis) ThrowError(ParserErrorCode.LeftParenthesisExpected);
             get_token();
             if (currentToken.Type == StiTokenType.RParenthesis)
             {
-                //пустой список
+                //empty list
                 return args;
             }
             else
@@ -563,7 +563,7 @@ namespace Stimulsoft.Report.Import
                 currentToken = tokensList[tokenPos - 1];
             }
 
-            //обработка списка значений
+            //process list of values
             List<StiAsmCommand> tempAsmList = asmList;
             do
             {
@@ -574,7 +574,7 @@ namespace Stimulsoft.Report.Import
             while (currentToken.Type == StiTokenType.Comma);
             asmList = tempAsmList;
 
-            if (currentToken.Type != StiTokenType.RParenthesis) ThrowError(ParserErrorCode.RightParenthesisExpected);   //ожидается закрывающая скобка
+            if (currentToken.Type != StiTokenType.RParenthesis) ThrowError(ParserErrorCode.RightParenthesisExpected);
             return args;
         }
 
