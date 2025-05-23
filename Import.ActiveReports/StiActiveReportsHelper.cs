@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2017 Stimulsoft
+#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2017 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2017 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.IO;
@@ -42,19 +42,20 @@ using Stimulsoft.Report;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Dictionary;
 using Stimulsoft.Report.Components.TextFormats;
+using Stimulsoft.Base;
 
 namespace Stimulsoft.Report.Import
 {
     public class StiActiveReportsHelper
     {
         #region Fields
-        ArrayList errorList = null;
+        List<string> errorList = null;
         ArrayList fields = new ArrayList();
         Hashtable fieldsNames = new Hashtable();
         #endregion
 
         #region Root node
-        public void ProcessRootNode(XmlNode rootNode, StiReport report, ArrayList errorList)
+        public void ProcessRootNode(XmlNode rootNode, StiReport report, List<string> errorList)
         {
             this.errorList = errorList;
             this.fields.Clear();
@@ -846,7 +847,7 @@ namespace Stimulsoft.Report.Import
                 ms.Seek(0, SeekOrigin.Begin);
                 #endregion
 
-                component.Image = StiImageConverter.BytesToImage(ms.ToArray());
+                component.ImageBytes = ms.ToArray();
             }
 
             return component;
@@ -1648,11 +1649,11 @@ namespace Stimulsoft.Report.Import
 
             try
             {
-                Thread.CurrentThread.CurrentCulture = new CultureInfo("en-US", false);
+                Thread.CurrentThread.CurrentCulture = StiCultureInfo.GetEN(false);
 
                 var report = new StiReport();
                 var helper = new StiActiveReportsHelper();
-                var errors = new ArrayList();
+                var errors = new List<string>();
                 var doc = new XmlDocument();
 
                 using (var stream = new MemoryStream(bytes))

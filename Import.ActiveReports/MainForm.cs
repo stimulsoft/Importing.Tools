@@ -10,6 +10,7 @@ using Stimulsoft.Report;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Base;
 using Stimulsoft.Report.Import;
+using System.Collections.Generic;
 
 namespace Import.ActiveReports
 {
@@ -358,7 +359,7 @@ namespace Import.ActiveReports
                 Application.DoEvents();
 
                 StiActiveReportsHelper helper = new StiActiveReportsHelper();
-                ArrayList errorList = new ArrayList();
+                var errorList = new List<string>();
                 helper.ProcessRootNode(doc.DocumentElement, report, errorList);
 
                 if (checkBoxSetLinked.Checked)
@@ -384,11 +385,9 @@ namespace Import.ActiveReports
                     log.WriteNode(st);
                 }
                 log.CloseLog();
-                #endif
 
                 MessageBox.Show("Conversion complete!");
 
-                #if Test
                 report.Design();
                 #endif
             }
