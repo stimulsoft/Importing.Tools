@@ -10,6 +10,7 @@ using Stimulsoft.Report;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Import;
 using Stimulsoft.Base;
+using System.Collections.Generic;
 
 namespace Import.TelerikReports
 {
@@ -300,7 +301,7 @@ namespace Import.TelerikReports
         private void btnBrowseRpx_Click(object sender, EventArgs e)
         {
             openFileDialog1.Title = "Select Telerik Reports file";
-            openFileDialog1.Filter = "Telerik Reports file (*.trdx)|*.trdx";
+            openFileDialog1.Filter = "Telerik Reports file (*.trdx,*.trdp)|*.trdx;*.trdp";
 
             if (openFileDialog1.ShowDialog() == DialogResult.OK)
             {
@@ -347,8 +348,7 @@ namespace Import.TelerikReports
                 log.CloseLog();
                 log.OpenLog("Open Telerik Reports template file ...");
                 Application.DoEvents();
-                XmlDocument doc = new XmlDocument();
-                doc.Load(tbRpxFile.Text);
+                var bytes = File.ReadAllBytes(tbRpxFile.Text);
 
                 log.CurrentNode.Text += "OK";
                 log.CloseLog();
@@ -356,8 +356,8 @@ namespace Import.TelerikReports
                 Application.DoEvents();
 
                 StiTelerikReportsHelper helper = new StiTelerikReportsHelper();
-                ArrayList errorList = new ArrayList();
-                helper.ProcessRootNode(doc.DocumentElement, report, errorList);
+                var errorList = new List<string>();
+                helper.ProcessFile(bytes, report, errorList);
 
                 if (checkBoxSetLinked.Checked)
                 {
@@ -382,11 +382,9 @@ namespace Import.TelerikReports
                     log.WriteNode(st);
                 }
                 log.CloseLog();
-                #endif
 
                 MessageBox.Show("Conversion complete!");
 
-                #if Test
                 report.Design();
                 #endif
             }
