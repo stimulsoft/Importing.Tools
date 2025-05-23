@@ -10,6 +10,7 @@ using Stimulsoft.Report;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Base;
 using Stimulsoft.Report.Import;
+using System.Collections.Generic;
 
 namespace Import.ComponentOneReports
 {
@@ -356,7 +357,7 @@ namespace Import.ComponentOneReports
                 Application.DoEvents();
 
                 StiComponentOneReportsHelper helper = new StiComponentOneReportsHelper();
-                ArrayList errorList = new ArrayList();
+                var errorList = new List<string>();
                 string savePath = tbStimulReportFile.Text;
                 //report.Pages.Clear();
                 //int pageIndex = 0;
