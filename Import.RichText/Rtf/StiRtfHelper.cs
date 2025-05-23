@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2017 Stimulsoft
+#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2017 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2017 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.IO;
@@ -151,7 +151,7 @@ namespace Stimulsoft.Report.Import
 
 		private int GetCodepageFromLang(int lang)
 		{
-            if ((lang == 0x0000) || (lang == 0x007F) || (lang == 0x00FF) || (lang == 0x0400) || (lang == 0x0800))
+            if ((lang == 0x0000) || (lang == 0x007F) || (lang == 0x00FF) || (lang == 0x0400) || (lang == 0x0800) || (lang == 0x0C00))
 			{
 				return -1;
 			}
@@ -178,9 +178,11 @@ namespace Stimulsoft.Report.Import
 			return (char[])codepageToEncodingTables[codepage];
 		}
 
-		private StiRtfFontData GetFontData(int fontNumber, ArrayList fontTable)
+		private StiRtfFontData GetFontData(StiRtfState state, ArrayList fontTable)
 		{
-			StiRtfFontData fontData = null;
+            int fontNumber = state.FontNumber;
+
+            StiRtfFontData fontData = null;
 			foreach (StiRtfFontData data in fontTable)
 			{
 				if (data.Number == fontNumber)
@@ -189,7 +191,20 @@ namespace Stimulsoft.Report.Import
 					break;
 				}
 			}
-			if (fontData != null)
+            if (fontData == null)
+            {
+                fontNumber = state.AFontNumber;
+                foreach (StiRtfFontData data in fontTable)
+                {
+                    if (data.Number == fontNumber)
+                    {
+                        fontData = data;
+                        break;
+                    }
+                }
+            }
+
+            if (fontData != null)
 			{
 				if (fontData.Encoding == null)
 				{
@@ -578,13 +593,13 @@ namespace Stimulsoft.Report.Import
                                             break;
                                         case "f":
                                             currentState.FontNumber = node.Parameter;
-                                            currentState.Encoding = GetFontData(currentState.FontNumber, fontTable).Encoding;
+                                            currentState.Encoding = GetFontData(currentState, fontTable).Encoding;
                                             break;
                                         case "af":
                                             currentState.AFontNumber = node.Parameter;
                                             if (currentState.FontNumber == 0)
                                             {
-                                                currentState.Encoding = GetFontData(currentState.AFontNumber, fontTable).Encoding;
+                                                currentState.Encoding = GetFontData(currentState, fontTable).Encoding;
                                             }
                                             break;
                                         case "fs":
@@ -657,7 +672,7 @@ namespace Stimulsoft.Report.Import
                             if (beginState.Bold) fs |= FontStyle.Bold;
                             if (beginState.Italic) fs |= FontStyle.Italic;
                             if (beginState.Underline) fs |= FontStyle.Underline;
-                            text.Font = new Font(GetFontData(beginState.FontNumber, fontTable).Name, (float)beginState.FontSize, fs);
+                            text.Font = new Font(GetFontData(beginState, fontTable).Name, (float)beginState.FontSize, fs);
                             text.TextBrush = new StiSolidBrush((Color)colorTable[beginState.FontColor]);
 
                             text.Parent = band;
@@ -892,7 +907,7 @@ namespace Stimulsoft.Report.Import
 
                                             #region //txtpar
                                             case "pard":
-                                                //переключаемся на параметры текста
+                                                //switch to text options
                                                 if (!cellContentPresent)
                                                 {
                                                     cellIndex = 0;
@@ -923,13 +938,13 @@ namespace Stimulsoft.Report.Import
                                                 break;
                                             case "f":
                                                 currentState.FontNumber = node.Parameter;
-                                                currentState.Encoding = GetFontData(currentState.FontNumber, fontTable).Encoding;
+                                                currentState.Encoding = GetFontData(currentState, fontTable).Encoding;
                                                 break;
                                             case "af":
                                                 currentState.AFontNumber = node.Parameter;
                                                 if (currentState.FontNumber == 0)
                                                 {
-                                                    currentState.Encoding = GetFontData(currentState.AFontNumber, fontTable).Encoding;
+                                                    currentState.Encoding = GetFontData(currentState, fontTable).Encoding;
                                                 }
                                                 break;
                                             case "fs":
@@ -973,8 +988,7 @@ namespace Stimulsoft.Report.Import
                                                 if (beginState.Bold) fs |= FontStyle.Bold;
                                                 if (beginState.Italic) fs |= FontStyle.Italic;
                                                 if (beginState.Underline) fs |= FontStyle.Underline;
-                                                var fontData = GetFontData(beginState.FontNumber, fontTable);
-                                                if (fontData == null) fontData = GetFontData(beginState.AFontNumber, fontTable);
+                                                var fontData = GetFontData(beginState, fontTable);
                                                 currentCell.Content.Font = new Font(fontData.Name, (beginState.FontSize > 0 ? (float)beginState.FontSize : 2), fs);    //!!! fontSize
                                                 currentCell.Content.TextBrush = new StiSolidBrush((Color)colorTable[beginState.FontColor]);
                                                 res = new StringBuilder();
@@ -1116,8 +1130,8 @@ namespace Stimulsoft.Report.Import
                 int pagesCounter = 1;
                 foreach (StiPage page in report.Pages)
                 {
-                    page.LargeHeight = true;
-                    page.LargeHeightFactor = 2;
+                    //page.LargeHeight = true;
+                    //page.LargeHeightFactor = 2;
                     page.Name = string.Format("Page{0}", pagesCounter++);
                 }
                 #endregion
