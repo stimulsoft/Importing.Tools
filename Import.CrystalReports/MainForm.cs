@@ -10,6 +10,7 @@ using Stimulsoft.Report.Components;
 using Stimulsoft.Base;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
+using System.Globalization;
 
 namespace Import.CrystalReports
 {
@@ -335,6 +336,8 @@ namespace Import.CrystalReports
 			else
 			{
                 StiTreeViewLog log = new StiTreeViewLog(this.treeViewLog);
+
+                CultureInfo.CurrentCulture = new CultureInfo("en-US");
 
                 log.OpenLog("Initialize ...");
                 Application.DoEvents();
