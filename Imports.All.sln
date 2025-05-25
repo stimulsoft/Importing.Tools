@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 15
-VisualStudioVersion = 15.0.26730.15
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36121.58
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Import.ActiveReports", "Import.ActiveReports\Import.ActiveReports.csproj", "{AB339945-F383-4E62-A05E-D567E53D60F8}"
 EndProject
@@ -22,6 +22,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Import.XtraReports", "Import.XtraReports\Import.XtraReports.csproj", "{190B3AD7-1D71-428F-A4FB-921D67E3E8D7}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Import.VisualFoxPro", "Import.VisualFoxPro\Import.VisualFoxPro.csproj", "{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Import.XtraReports2025", "Import.XtraReports2025\Import.XtraReports2025.csproj", "{8C55BC03-CC97-4A79-A85B-69F5DFF7E5F5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Import.ListAndLabel", "Import.ListAndLabel\Import.ListAndLabel.csproj", "{D2360CFB-169E-442E-8AC3-91AFF368555E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -90,6 +94,18 @@ Global
 		{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}.Demo|Any CPU.Build.0 = Demo|Any CPU
 		{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D99253DA-AFF9-4327-9ABC-E7CF848A3DE1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8C55BC03-CC97-4A79-A85B-69F5DFF7E5F5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8C55BC03-CC97-4A79-A85B-69F5DFF7E5F5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8C55BC03-CC97-4A79-A85B-69F5DFF7E5F5}.Demo|Any CPU.ActiveCfg = Demo|Any CPU
+		{8C55BC03-CC97-4A79-A85B-69F5DFF7E5F5}.Demo|Any CPU.Build.0 = Demo|Any CPU
+		{8C55BC03-CC97-4A79-A85B-69F5DFF7E5F5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8C55BC03-CC97-4A79-A85B-69F5DFF7E5F5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D2360CFB-169E-442E-8AC3-91AFF368555E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D2360CFB-169E-442E-8AC3-91AFF368555E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D2360CFB-169E-442E-8AC3-91AFF368555E}.Demo|Any CPU.ActiveCfg = Demo|Any CPU
+		{D2360CFB-169E-442E-8AC3-91AFF368555E}.Demo|Any CPU.Build.0 = Demo|Any CPU
+		{D2360CFB-169E-442E-8AC3-91AFF368555E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D2360CFB-169E-442E-8AC3-91AFF368555E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
