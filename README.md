@@ -24,7 +24,7 @@ In order to start simply open the Visual Studio solution file in the IDE Visual 
 
 # Stimulsoft Reports
 
-[Live Demo](http://demo.stimulsoft.com/#Net)
+[Live Demo](https://demo.stimulsoft.com/#Net)
 
 [Free Download](https://www.stimulsoft.com/en/downloads)
 
