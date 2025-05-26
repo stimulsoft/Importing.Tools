@@ -28,8 +28,6 @@
 #endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace Import.XtraReports
 {

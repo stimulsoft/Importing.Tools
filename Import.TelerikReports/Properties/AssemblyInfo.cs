@@ -1,10 +1,10 @@
-﻿#region Copyright (C) 2003-2012 Stimulsoft
+﻿#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2012 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,21 +25,20 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2012 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using System.Security;
-using System.Security.Permissions;
+using Stimulsoft.Base;
 
 [assembly: AssemblyTitle("Import.TelerikReports.exe")]
 [assembly: AssemblyDescription("Import Telerik Reports files to Stimulsoft Reports")]
 [assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCompany("Stimulsoft")]
-[assembly: AssemblyProduct("Stimulsoft Reports")]
-[assembly: AssemblyCopyright("Copyright (C) 2003-2012 Stimulsoft")]
-[assembly: AssemblyTrademark("Stimulsoft")]
+[assembly: AssemblyCompany(StiPublicName.Company)]
+[assembly: AssemblyProduct(StiPublicName.Product)]
+[assembly: AssemblyCopyright(StiVersion.Copyright)]
+[assembly: AssemblyTrademark(StiPublicName.Trademark)]
 [assembly: AssemblyCulture("")]
 [assembly: AllowPartiallyTrustedCallers]
 [assembly: CLSCompliant(true)]

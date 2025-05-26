@@ -1,10 +1,10 @@
-﻿#region Copyright (C) 2003-2016 Stimulsoft
+﻿#region Copyright (C) 2003-2025 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2016 Stimulsoft     							}
+{	Copyright (C) 2003-2025 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,13 +25,11 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2016 Stimulsoft
+#endregion Copyright (C) 2003-2025 Stimulsoft
 
 using System;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using System.Security;
-using System.Security.Permissions;
 using Stimulsoft.Base;
 
 [assembly: AssemblyTitle("Import.ReportSharpShooter.exe")]
