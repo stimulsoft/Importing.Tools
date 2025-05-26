@@ -8,12 +8,14 @@ This repository has many projects (Visual Studio Projects) each in different fol
 * Import.ComponentOneReports
 * Import.CrystalReports
 * Import.FastReports
+* Import.List&Label
 * Import.ReportingServices
 * Import.ReportSharpShooter
 * Import.RichText
 * Import.TelerikReports
 * Import.VisualFoxPro
 * Import.XtraReports
+* Import.XtraReports2025
 
 All of them have their own Visual Studio solution (.sln-file), as well as additionally combined into one solution file.
 
