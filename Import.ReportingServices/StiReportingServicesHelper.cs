@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2025 Stimulsoft
+#region Copyright (C) 2003-2026 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2025 Stimulsoft     							}
+{	Copyright (C) 2003-2026 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2025 Stimulsoft
+#endregion Copyright (C) 2003-2026 Stimulsoft
 
 using System;
 using System.Collections;
@@ -297,9 +297,16 @@ namespace Stimulsoft.Report.Import
                 {
                     StiImage image = de.Key as StiImage;
                     StiComponent comp = de.Value as StiComponent;
-                    image.ClientRectangle = comp.ClientRectangle;
-                    image.Page = comp.Page;
-                    comp.Parent.Components.Insert(comp.Parent.Components.IndexOf(comp), image);
+                    if (comp is StiPage)
+                    {
+                        page.Watermark.ImageBytes = image.ImageBytes;
+                    }
+                    else
+                    {
+                        image.ClientRectangle = comp.ClientRectangle;
+                        image.Page = comp.Page;
+                        comp.Parent.Components.Insert(comp.Parent.Components.IndexOf(comp), image);
+                    }
                     image.Name = CheckComponentName(report, image.Name);
                 }
                 #endregion
@@ -671,7 +678,7 @@ namespace Stimulsoft.Report.Import
                         break;
                 }
             }
-            if (source != null)
+            if (source != null && value != null)
             {
                 if (source == "Embedded")
                 {

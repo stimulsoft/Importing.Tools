@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2025 Stimulsoft
+#region Copyright (C) 2003-2026 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2025 Stimulsoft     							}
+{	Copyright (C) 2003-2026 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2025 Stimulsoft
+#endregion Copyright (C) 2003-2026 Stimulsoft
 
 using System;
 using System.IO;
@@ -1162,7 +1162,7 @@ namespace Stimulsoft.Report.Import
                 switch (node.Name)
                 {
                     case "Value":
-                        component.ImageBytes = Convert.FromBase64String(node.ChildNodes[0].Value);
+                        component.PutImage(Convert.FromBase64String(node.ChildNodes[0].Value));
                         break;
 
                     case "Url":

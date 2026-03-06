@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2025 Stimulsoft
+#region Copyright (C) 2003-2026 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2025 Stimulsoft     							}
+{	Copyright (C) 2003-2026 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2025 Stimulsoft
+#endregion Copyright (C) 2003-2026 Stimulsoft
 
 using System;
 using System.Collections;
@@ -878,7 +878,7 @@ namespace Stimulsoft.Report.Import
             comp.Height = ConvertFromFRUnit(ReadDouble(node, "Height", comp, comp.Height), comp);
 
             comp.CanGrow = ReadBool(node, "CanGrow", comp, true);
-            comp.CanShrink = ReadBool(node, "CanShrink", comp, true);
+            comp.CanShrink = ReadBool(node, "CanShrink", comp, false);
             comp.Printable = ReadBool(node, "Printable", comp, true);
             comp.Enabled = ReadBool(node, "Enabled", comp, true);
             comp.GrowToHeight = ReadBool(node, "GrowToBottom", comp, false);
@@ -918,7 +918,7 @@ namespace Stimulsoft.Report.Import
             #endregion
 
             #region ShiftMode
-            switch (ReadString(node, "ShiftMode", "Always"))
+            switch (ReadString(node, "ShiftMode", "WhenOverlapped"))
             {
                 case "Always":
                     comp.ShiftMode = StiShiftMode.IncreasingSize | StiShiftMode.DecreasingSize;
@@ -1161,8 +1161,9 @@ namespace Stimulsoft.Report.Import
                 if (isFr3)
                 {
                     var fontName = ReadString(node, "Font.Name", "");
-                    var fontSize = Math.Abs(ReadDouble(node, "Font.Height", text, 0));
                     var fontStyleInt = ReadInt(node, "Font.Style", text, 0);
+                    var fontSizeD = ReadDouble(node, "Font.Height", text, 0);
+                    double fontSize = Math.Abs(fontSizeD) * 0.75 * (fontSizeD < 0 ? 1 : 0.75); 
                     if (!string.IsNullOrWhiteSpace(fontName) && fontSize > 0)
                     {
                         FontStyle fs = FontStyle.Regular;
