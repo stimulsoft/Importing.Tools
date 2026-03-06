@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2025 Stimulsoft
+#region Copyright (C) 2003-2026 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2025 Stimulsoft     							}
+{	Copyright (C) 2003-2026 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,30 +25,33 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2025 Stimulsoft
+#endregion Copyright (C) 2003-2026 Stimulsoft
 
+using Stimulsoft.Base;
+using Stimulsoft.Base.Drawing;
+using Stimulsoft.Report.BarCodes;
+using Stimulsoft.Report.Chart;
+using Stimulsoft.Report.Components;
+using Stimulsoft.Report.Components.ShapeTypes;
+using Stimulsoft.Report.CrossTab;
+using Stimulsoft.Report.Dictionary;
 using System;
-using System.IO;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Drawing;
+using System.IO;
 using System.Text;
 using System.Threading;
 using System.Xml;
-using Stimulsoft.Base.Drawing;
-using Stimulsoft.Report.BarCodes;
-using Stimulsoft.Report.Components;
-using Stimulsoft.Report.Dictionary;
-using Stimulsoft.Report.CrossTab;
-using Stimulsoft.Base;
-using Stimulsoft.Report.Components.ShapeTypes;
-using Stimulsoft.Report.Chart;
+using static Stimulsoft.Report.Images.StiReportImages;
 
 namespace Stimulsoft.Report.Import
 {
     public class StiDevExpressHelper
     {
         #region Fields
+        private StiReport report = null;
         private List<string> errorList = null;
         private ArrayList fields = new ArrayList();
         private string currentDataSourceName = "ds";
@@ -83,10 +86,12 @@ namespace Stimulsoft.Report.Import
         private List<StiDataBand> detailReportVerticalDetailBandsCollection = new List<StiDataBand>();
         private List<StiGroupFooterBand> detailReportGroupFooterBandsCollection = new List<StiGroupFooterBand>();
         private List<StiReportSummaryBand> detailReportReportFooterBandsCollection = new List<StiReportSummaryBand>();
+        private List<StiSubReport> subreports = new List<StiSubReport>();
+        private List<XmlNode> subreportsNodes = new List<XmlNode>();
         #endregion
 
         #region Root node
-        public void ProcessFile(byte[] bytes, StiReport report, List<string> errorList)
+        private void ProcessFile(byte[] bytes, StiReport report, List<string> errorList)
         {
             var doc = new XmlDocument();
 
@@ -96,10 +101,45 @@ namespace Stimulsoft.Report.Import
             }
             var rootNode = doc.DocumentElement;
 
+            this.report = report;
             this.errorList = errorList;
             fields.Clear();
             report.ReportUnit = StiReportUnitType.HundredthsOfInch;
+
             StiPage page = report.Pages[0];
+
+            ProcessPage(rootNode, report, page);
+
+            //process internal subreports
+            for (int index = 0; index < subreports.Count; index++)
+            {
+                var subReport = subreports[index];
+                var baseNode = subreportsNodes[index];
+
+                var subPage = new StiPage();
+                subPage.Report = report;
+                subPage.Name = CheckComponentName("sub_" + subReport.Name);
+                report.Pages.Add(subPage);
+                subReport.SubReportPage = subPage;
+
+                foreach (XmlNode node in baseNode.ChildNodes)
+                {
+                    switch (node.Name)
+                    {
+                        case "ReportSource":
+                            ProcessPage(node, report, subPage);
+                            break;
+
+                        default:
+                            ThrowError(baseNode.Name, node.Name);
+                            break;
+                    }
+                }
+            }
+        }
+
+        private void ProcessPage(XmlNode rootNode, StiReport report, StiPage page)
+        {
             page.UnlimitedBreakable = false;
             page.TitleBeforeHeader = true;
 
@@ -209,20 +249,51 @@ namespace Stimulsoft.Report.Import
                     case "Bands":
                         ProcessBands(node, report, page);
                         break;
+
+                    case "Parameters":
+                        ProcessParameters(node, report);
+                        break;
+
+                    case "ComponentStorage":
+                    case "StyleSheet":
+                        //already processed
+                        break;
+
+                    default:
+                        ThrowError("root", node.Name);
+                        break;
                 }
             }
 
-            foreach (StiComponent comp in report.GetComponents())
+            foreach (StiComponent comp in page.GetComponents())
             {
                 comp.Page = page;
             }
 
+            report.Info.ShowHeaders = true;
+            report.Info.ForceDesigningMode = true;    //force DockToContainer for components with Enabled=false
             page.DockToContainer();
+            page.Correct();
             page.SortByPriority();
+            report.Info.ForceDesigningMode = false;
         }
         #endregion
 
         #region Items
+        private void ProcessParameters(XmlNode baseNode, StiReport report)
+        {
+            foreach (XmlNode node in baseNode.ChildNodes)
+            {
+                var variable = new StiVariable();
+                variable.Name = node.Attributes["Name"].Value;
+                variable.Type = typeof(string);
+                if (node.Attributes["Visible"]?.Value != "false")
+                    variable.RequestFromUser = true;
+
+                report.Dictionary.Variables.Add(variable);
+            }
+        }
+
         private void ProcessBands(XmlNode baseNode, StiReport report, StiContainer container)
         {
             var itemIndex = 1;
@@ -276,6 +347,18 @@ namespace Stimulsoft.Report.Import
 
                 foreach (var band in bottomMarginBandsCollection)
                     container.Components.Add(band);
+
+                topMarginBandsCollection.Clear();
+                reportHeaderBandsCollection.Clear();
+                pageHeaderBandsCollection.Clear();
+                groupHeaderBandsCollection.Clear();
+                detailBandsCollection.Clear();
+                detailReportBandsCollection.Clear();
+                verticalDetailBandsCollection.Clear();
+                groupFooterBandsCollection.Clear();
+                pageFooterBandsCollection.Clear();
+                reportFooterBandsCollection.Clear();
+                bottomMarginBandsCollection.Clear();
             }
 
             if (container.GetType() == typeof(StiPanel))
@@ -337,7 +420,7 @@ namespace Stimulsoft.Report.Import
                     };
 
                     if (!string.IsNullOrEmpty(style.Name))
-                        styles.Add(style.Name, style);
+                        styles[style.Name] = style;
 
                     itemIndex++;
                 }
@@ -357,7 +440,7 @@ namespace Stimulsoft.Report.Import
                 switch (node.Name)
                 {
                     case "Name":
-                        component.Name = node.Value;
+                        component.Name = CheckComponentName(node.Value);
                         break;
 
                     case "Visible":
@@ -532,7 +615,7 @@ namespace Stimulsoft.Report.Import
             if (bandItemType == "TopMarginBand")
             {
                 var topMarginBand = new StiOverlayBand();
-                topMarginBand.Name = $"{bandItemName}{bandCountForDifferentName}";
+                topMarginBand.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}");
                 bandCountForDifferentName++;
                 topMarginBand.Height = ToHi(reportUnit, bandItemHeight);
                 topMarginBand.MaxHeight = ToHi(reportUnit, bandItemHeight);
@@ -559,7 +642,7 @@ namespace Stimulsoft.Report.Import
             else if (bandItemType == "ReportHeaderBand")
             {
                 var reportTitleBand = new StiReportTitleBand();
-                reportTitleBand.Name = $"{bandItemName}{bandCountForDifferentName}";
+                reportTitleBand.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}");
                 bandCountForDifferentName++;
                 reportTitleBand.Height = ToHi(reportUnit, bandItemHeight);
                 reportTitleBand.Brush = new StiSolidBrush(backColor);
@@ -579,7 +662,7 @@ namespace Stimulsoft.Report.Import
             else if (bandItemType == "PageHeaderBand")
             {
                 var pageHeaderBand = new StiPageHeaderBand();
-                pageHeaderBand.Name = $"{bandItemName}{bandCountForDifferentName}";
+                pageHeaderBand.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}");
                 bandCountForDifferentName++;
                 pageHeaderBand.Height = ToHi(reportUnit, bandItemHeight);
                 pageHeaderBand.Brush = new StiSolidBrush(backColor);
@@ -595,7 +678,7 @@ namespace Stimulsoft.Report.Import
             else if (bandItemType == "DetailBand")
             {
                 var dataBand = new StiDataBand();
-                dataBand.Name = $"{bandItemName}{bandCountForDifferentName}";
+                dataBand.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}");
                 bandCountForDifferentName++;
                 dataBand.Height = ToHi(reportUnit, bandItemHeight);
 
@@ -628,7 +711,7 @@ namespace Stimulsoft.Report.Import
                 var panelDetail = new StiPanel();
                 panelDetail.CanGrow = true;
                 panelDetail.CanShrink = true;
-                panelDetail.Name = $"{bandItemName}{bandCountForDifferentName}Panel";
+                panelDetail.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}Panel");
 
                 foreach (XmlNode node in baseNode.ChildNodes)
                 {
@@ -666,7 +749,7 @@ namespace Stimulsoft.Report.Import
             else if (bandItemType == "BottomMarginBand")
             {
                 var bottomMargin = new StiOverlayBand();
-                bottomMargin.Name = $"{bandItemName}{bandCountForDifferentName}";
+                bottomMargin.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}");
                 bandCountForDifferentName++;
                 bottomMargin.Height = ToHi(reportUnit, bandItemHeight);
                 bottomMargin.MaxHeight = ToHi(reportUnit, bandItemHeight);
@@ -694,7 +777,7 @@ namespace Stimulsoft.Report.Import
             else if (bandItemType == "GroupHeaderBand")
             {
                 var groupHeaderBand = new StiGroupHeaderBand();
-                groupHeaderBand.Name = $"{bandItemName}{bandCountForDifferentName}";
+                groupHeaderBand.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}");
                 bandCountForDifferentName++;
                 groupHeaderBand.Height = ToHi(reportUnit, bandItemHeight);
                 groupHeaderBand.Brush = new StiSolidBrush(backColor);
@@ -711,7 +794,7 @@ namespace Stimulsoft.Report.Import
             else if (bandItemType == "GroupFooterBand")
             {
                 var groupFooterBand = new StiGroupFooterBand();
-                groupFooterBand.Name = $"{bandItemName}{bandCountForDifferentName}";
+                groupFooterBand.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}");
                 bandCountForDifferentName++;
                 groupFooterBand.Height = ToHi(reportUnit, bandItemHeight);
                 groupFooterBand.Brush = new StiSolidBrush(backColor);
@@ -728,7 +811,7 @@ namespace Stimulsoft.Report.Import
             else if (bandItemType == "ReportFooterBand")
             {
                 var reportSummaryBand = new StiReportSummaryBand();
-                reportSummaryBand.Name = $"{bandItemName}{bandCountForDifferentName}";
+                reportSummaryBand.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}");
                 bandCountForDifferentName++;
                 reportSummaryBand.Height = ToHi(reportUnit, bandItemHeight);
                 reportSummaryBand.Brush = new StiSolidBrush(backColor);
@@ -745,7 +828,7 @@ namespace Stimulsoft.Report.Import
             else if (bandItemType == "PageFooterBand")
             {
                 var pageFooterBand = new StiPageFooterBand();
-                pageFooterBand.Name = $"{bandItemName}{bandCountForDifferentName}";
+                pageFooterBand.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}");
                 bandCountForDifferentName++;
                 pageFooterBand.Height = ToHi(reportUnit, bandItemHeight);
                 pageFooterBand.Brush = new StiSolidBrush(backColor);
@@ -759,7 +842,7 @@ namespace Stimulsoft.Report.Import
             else if (bandItemType == "VerticalDetailBand")
             {
                 var dataBand = new StiDataBand();
-                dataBand.Name = $"{bandItemName}{bandCountForDifferentName}";
+                dataBand.Name = CheckComponentName($"{bandItemName}{bandCountForDifferentName}");
                 bandCountForDifferentName++;
                 dataBand.Height = ToHi(reportUnit, bandItemHeight);
                 dataBand.DataSourceName = mainDataSourceName;
@@ -963,15 +1046,9 @@ namespace Stimulsoft.Report.Import
                 switch (node.Name)
                 {
                     case "Query":
-                        ProcessQuery(node, queryCollection);
+                        ProcessQuery(node, dataBase.Name);
                         break;
-                }
-            }
 
-            foreach (XmlNode node in baseNode.ChildNodes)
-            {
-                switch (node.Name)
-                {
                     case "Connection":
                         dataBase.ConnectionString = ProcessConnection(node);
                         break;
@@ -985,11 +1062,12 @@ namespace Stimulsoft.Report.Import
             report.Dictionary.Databases.Add(dataBase);
         }
 
-        private void ProcessQuery(XmlNode baseNode, Hashtable queryCollection)
+        private StiSqlSource ProcessQuery(XmlNode baseNode, string dataBaseName)
         {
             var type = "SelectQuery";
-            var name = "";
             var tableName = "";
+            var dataSource = new StiSqlSource();
+            dataSource.NameInSource = dataBaseName;
 
             foreach (XmlNode node in baseNode.Attributes)
             {
@@ -1000,7 +1078,8 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     case "Name":
-                        name = node.Value;
+                        dataSource.Name = node.Value;
+                        dataSource.Alias = dataSource.Name;
                         break;
 
                     default:
@@ -1041,26 +1120,38 @@ namespace Stimulsoft.Report.Import
                         }
                         break;
 
+                    case "ProcName":
+                        dataSource.SqlCommand = node.ChildNodes[0].Value;
+                        break;
+
+                    case "Parameter":
+                        var parameter = new StiDataParameter();
+                        parameter.Name = node.Attributes["Name"].Value;
+                        parameter.Expression = node.ChildNodes[0].Value;
+                        if (parameter.Expression.StartsWith("(System.String)", StringComparison.InvariantCulture))
+                            parameter.Type = (int)System.Data.SqlDbType.NVarChar;
+                        dataSource.Parameters.Add(parameter);
+                        break;
+
                     default:
                         ThrowError(baseNode.Name, node.Name);
                         break;
                 }
             }
 
-            var comand = "";
-
-            if (type == "SelectQuery")
-                comand = $"select * from {tableName}";
-
             if (type == "SelectQuery")
             {
-                queryCollection.Add(name, comand);
-                dataSourseCorrectNameCollection.Add(name, tableName);
+                dataSource.SqlCommand = $"select * from {tableName}";
             }
-            else if (type == "StoredProcQuery")
+            if (type == "StoredProcQuery")
             {
-
+                dataSource.Type = StiSqlSourceType.StoredProcedure;
             }
+
+            queryCollection.Add(dataSource.Name, dataSource);
+            dataSourseCorrectNameCollection.Add(dataSource.Name, tableName);
+
+            return dataSource;
         }
 
         private void ProcessSqlParameters(XmlNode baseNode, StiReport report, StiSqlSource dataSource)
@@ -1140,8 +1231,13 @@ namespace Stimulsoft.Report.Import
                     case "Name":
                         name = node.Value;
                         break;
+
                     case "ProviderKey":
                         providerKey = node.Value;
+                        break;
+
+                    case "ConnectionString":
+                        connectionString = node.Value;
                         break;
 
                     default:
@@ -1270,30 +1366,15 @@ namespace Stimulsoft.Report.Import
 
         private void ResultView(XmlNode baseNode, StiReport report)
         {
-            var viewName = "";
-            var name = "";
-
-            StiSqlSource dataSource = new StiSqlSource();
-            dataSource.Name = "ds";
-            dataSource.Alias = "ds";
-            dataSource.NameInSource = "db";
+            StiDataSource dataSource = null;
 
             foreach (XmlNode node in baseNode.Attributes)
             {
                 switch (node.Name)
                 {
                     case "Name":
-                        viewName = node.Value;
-                        var query = (string)queryCollection[viewName];
-
-                        if (!string.IsNullOrEmpty(query))
-                        {
-                            name = query.Split(' ')[query.Split(' ').Length - 1];
-
-                            dataSource.Name = name;
-                            dataSource.Alias = name;
-                            dataSource.NameInSource = currentDataSourceName;
-                        }
+                        var viewName = node.Value;
+                        dataSource = (StiDataSource)queryCollection[viewName];
                         break;
 
                     default:
@@ -1301,8 +1382,6 @@ namespace Stimulsoft.Report.Import
                         break;
                 }
             }
-
-            dataSource.SqlCommand = (string)queryCollection[viewName];
 
             foreach (XmlNode node in baseNode.ChildNodes)
             {
@@ -1342,7 +1421,7 @@ namespace Stimulsoft.Report.Import
                 }
             }
 
-            if (!string.IsNullOrEmpty(name))
+            if (dataSource != null)
                 report.Dictionary.DataSources.Add(dataSource);
         }
 
@@ -1676,6 +1755,40 @@ namespace Stimulsoft.Report.Import
                 ProcessTextBox(baseNode, itemName, text, locationFloat, sizeF, padding, border, container, foreColor, backColor,
                     font, textAlignment, styleName, report, multiline, isBorderNeedChange, isFontNeedChange, isForeColorNeedChange,
                     isBackColorNeedChange);
+
+            if (itemType == "XRSubreport")
+                ProcessSubreport(baseNode, itemName, locationFloat, sizeF, container, report, backColor, styleName);
+
+        }
+
+        private void ProcessSubreport(XmlNode baseNode, string itemName, string locationFloat, string sizeF, StiContainer container, StiReport report, Color backColor, string styleName)
+        {
+            StiSubReport subReport = new StiSubReport();
+            subReport.Name = CheckComponentName(itemName);
+            subReport.Brush = new StiSolidBrush(backColor);
+            subReport.Page = container.Page;
+
+            var style = report.Styles[styleName];
+            if (style != null)
+                style.SetStyleToComponent(subReport);
+
+            ClientRectangle(locationFloat, sizeF, subReport);
+            container.Components.Add(subReport);
+
+            var reportSourceUrl = baseNode.Attributes["ReportSourceUrl"]?.Value;
+            if (!string.IsNullOrWhiteSpace(reportSourceUrl))
+            {
+                //external subreport
+                if (reportSourceUrl.EndsWith(".repx"))
+                    reportSourceUrl = reportSourceUrl.Substring(0, reportSourceUrl.Length - 4) + "mrt";
+                subReport.SubReportUrl = reportSourceUrl;
+            }
+            else
+            {
+                //internal subreport, process later
+                subreports.Add(subReport);
+                subreportsNodes.Add(baseNode);
+            }
         }
 
         private void ProcessTextBox(XmlNode baseNode, string itemName, string text, string locationFloat, string sizeF, string padding,
@@ -1690,7 +1803,7 @@ namespace Stimulsoft.Report.Import
             if (style != null)
                 style.SetStyleToComponent(component);
 
-            component.Name = itemName;
+            component.Name = CheckComponentName(itemName);
             component.CanGrow = true;
             component.CanShrink = false;
 
@@ -1755,10 +1868,10 @@ namespace Stimulsoft.Report.Import
             StiBorder border, StiContainer container, string styleName, StiReport report)
         {
             var panel = new StiPanel();
-            panel.Name = $"{itemName}Panel";
+            panel.Name = CheckComponentName($"{itemName}Panel");
 
             var component = new StiCheckBox();
-            component.Name = itemName;
+            component.Name = CheckComponentName(itemName);
 
             if (isChecked == "true")
             {
@@ -1772,7 +1885,7 @@ namespace Stimulsoft.Report.Import
             {
                 var newText = new StiText();
                 newText.Text = text;
-                newText.Name = $"{itemName}Text";
+                newText.Name = CheckComponentName($"{itemName}Text");
                 newText.Font = defaultFont;
 
                 var style = report.Styles[styleName];
@@ -1813,7 +1926,7 @@ namespace Stimulsoft.Report.Import
             StiContainer container)
         {
             StiImage component = new StiImage();
-            component.Name = itemName;
+            component.Name = CheckComponentName(itemName);
             component.CanGrow = true;
             component.CanShrink = false;
 
@@ -1859,7 +1972,7 @@ namespace Stimulsoft.Report.Import
             Color forecolor, StiReport report, string styleName, Color backColor)
         {
             StiPanel component = new StiPanel();
-            component.Name = itemName;
+            component.Name = CheckComponentName(itemName);
             component.CanGrow = true;
             component.CanShrink = false;
             component.Brush = new StiSolidBrush(backColor);
@@ -1867,7 +1980,7 @@ namespace Stimulsoft.Report.Import
             var style = report.Styles[styleName];
 
             if (style != null)
-                style.SetStyleToComponent(component); ;
+                style.SetStyleToComponent(component);
 
             foreach (XmlNode node in baseNode.ChildNodes)
             {
@@ -1892,7 +2005,7 @@ namespace Stimulsoft.Report.Import
             StiBorder border, StiContainer container, string styleName, StiReport report)
         {
             StiRichText component = new StiRichText();
-            component.Name = itemName;
+            component.Name = CheckComponentName(itemName);
             component.CanGrow = true;
             component.CanShrink = false;
             component.WordWrap = true;
@@ -1928,7 +2041,7 @@ namespace Stimulsoft.Report.Import
             string horizontalSpacing, string verticalSpacing, string multiline)
         {
             var component = new StiTextInCells();
-            component.Name = itemName;
+            component.Name = CheckComponentName(itemName);
             component.CellWidth = (float)ToHi(reportUnit, cellWidth);
             component.CellHeight = (float)ToHi(reportUnit, cellHeight);
             component.HorSpacing = (float)ToHi(reportUnit, horizontalSpacing);
@@ -1973,7 +2086,7 @@ namespace Stimulsoft.Report.Import
             string locationFloat, string sizeF, StiContainer container, string styleName, StiReport report)
         {
             var component = ShapeLineComponent(lineDirection);
-            component.Name = itemName;
+            component.Name = CheckComponentName(itemName);
             component.Width = ParseDouble(lineWidth);
             component.Style = ParseBorderStyle(lineStyle);
             component.BorderColor = foreColor;
@@ -2008,7 +2121,7 @@ namespace Stimulsoft.Report.Import
                 }
             }
 
-            component.Name = baseNode.Name;
+            component.Name = CheckComponentName(baseNode.Name);
             component.Brush = new StiSolidBrush(fillColor);
 
             var style = report.Styles[styleName];
@@ -2121,7 +2234,7 @@ namespace Stimulsoft.Report.Import
             , Color backColor, Color foreColor)
         {
             var component = new StiBarCode();
-            component.Name = itemName;
+            component.Name = CheckComponentName(itemName);
 
             foreach (XmlNode node in baseNode.ChildNodes)
             {
@@ -2176,7 +2289,7 @@ namespace Stimulsoft.Report.Import
             StiContainer container, string styleName, StiReport report)
         {
             var component = new StiChart();
-            component.Name = itemName;
+            component.Name = CheckComponentName(itemName);
 
             foreach (XmlNode node in baseNode.ChildNodes)
             {
@@ -2398,11 +2511,11 @@ namespace Stimulsoft.Report.Import
 
             if (!string.IsNullOrEmpty(itemName))
             {
-                tablePanel.Name = itemName;
+                tablePanel.Name = CheckComponentName(itemName);
             }
             else
             {
-                tablePanel.Name = $"{container.Name}Table{bandCountForDifferentName}";
+                tablePanel.Name = CheckComponentName($"{container.Name}Table{bandCountForDifferentName}");
                 bandCountForDifferentName++;
             }
 
@@ -2829,7 +2942,7 @@ namespace Stimulsoft.Report.Import
                         panel.ClientRectangle.Width,
                         panel.ClientRectangle.Height);
 
-                    panel.Components[0].Name = $"{panel.Components[0].Name}Label";
+                    panel.Components[0].Name = CheckComponentName($"{panel.Components[0].Name}Label");
 
                     if (panel.Components[0] is StiText)
                     {
@@ -2857,7 +2970,7 @@ namespace Stimulsoft.Report.Import
             if (panel.Components.Count == 0)
             {
                 var newText = new StiText();
-                newText.Name = $"{name}Label";
+                newText.Name = CheckComponentName($"{name}Label");
                 newText.Text = text;
                 newText.Font = font;
                 newText.ClientRectangle = new RectangleD(
@@ -2887,7 +3000,7 @@ namespace Stimulsoft.Report.Import
             }
 
             if (string.IsNullOrEmpty(panel.Name))
-                panel.Name = $"{name}Panel";
+                panel.Name = CheckComponentName($"{name}Panel");
 
             var maxItemHeight = rowHeight;
 
@@ -2976,7 +3089,7 @@ namespace Stimulsoft.Report.Import
         private void ProcessCrossTab(XmlNode baseNode, StiContainer container, string dataSourceRef, string dataMember)
         {
             var crossTable = new StiCrossTab();
-            crossTable.Name = $"{container.Name}CrossTab";
+            crossTable.Name = CheckComponentName($"{container.Name}CrossTab");
             crossTable.ClientRectangle = new RectangleD(0, 0, crossTable.Width, crossTable.Height);
             crossTable.CanGrow = true;
 
@@ -3106,7 +3219,7 @@ namespace Stimulsoft.Report.Import
                     rowTotal.Conditions = rowFields[index].Conditions;
                     rowTotal.Font = rowFields[index].Font;
                     rowTotal.Margins = rowFields[index].Margins;
-                    rowTotal.Name = $"{crossTable.Name}_RowTotal{index}";
+                    rowTotal.Name = CheckComponentName($"{crossTable.Name}_RowTotal{index}");
                     rowTotal.Page = rowFields[index].Page;
                     rowTotal.Parent = rowFields[index].Parent;
                     rowTotal.Restrictions = rowFields[index].Restrictions;
@@ -3127,7 +3240,7 @@ namespace Stimulsoft.Report.Import
                     row.DisplayValue = new StiDisplayCrossValueExpression(rowFields[index].Text.ToString().Replace(" ", ""));
                     row.Font = rowFields[index].Font;
                     row.Margins = rowFields[index].Margins;
-                    row.Name = $"{crossTable.Name}_Row{index}";
+                    row.Name = CheckComponentName($"{crossTable.Name}_Row{index}");
                     row.Page = rowFields[index].Page;
                     row.Parent = rowFields[index].Parent;
                     row.Restrictions = rowFields[index].Restrictions;
@@ -3163,7 +3276,7 @@ namespace Stimulsoft.Report.Import
 
                     var crossTitle = new StiCrossTitle();
                     crossTitle.ComponentStyle = rowFields[index].ComponentStyle;
-                    crossTitle.Name = $"{crossTable.Name}_Row{index}_Title";
+                    crossTitle.Name = CheckComponentName($"{crossTable.Name}_Row{index}_Title");
                     crossTitle.ClientRectangle = new RectangleD
                         (
                         crossRowX,
@@ -3198,7 +3311,7 @@ namespace Stimulsoft.Report.Import
 
             var leftTitle = new StiCrossTitle();
             leftTitle.ComponentStyle = rowComponent.ComponentStyle;
-            leftTitle.Name = $"{crossTable.Name}_LeftTitle";
+            leftTitle.Name = CheckComponentName($"{crossTable.Name}_LeftTitle");
             leftTitle.TypeOfComponent = "LeftTitle";
             leftTitle.ClientRectangle = new RectangleD
                 (
@@ -3225,7 +3338,7 @@ namespace Stimulsoft.Report.Import
 
             var rightTitle = new StiCrossTitle();
             rightTitle.ComponentStyle = rowComponent.ComponentStyle;
-            rightTitle.Name = $"{crossTable.Name}_RightTitle";
+            rightTitle.Name = CheckComponentName($"{crossTable.Name}_RightTitle");
             rightTitle.TypeOfComponent = "RightTitle";
             rightTitle.Conditions = rowComponent.Conditions;
             rightTitle.Font = rowComponent.Font;
@@ -3315,7 +3428,7 @@ namespace Stimulsoft.Report.Import
                 column.DisplayValue = new StiDisplayCrossValueExpression(columnFields[index].Text.ToString().Replace(" ", ""));
                 column.Font = columnFields[index].Font;
                 column.Margins = columnFields[index].Margins;
-                column.Name = $"{crossTable.Name}_Column{index}";
+                column.Name = CheckComponentName($"{crossTable.Name}_Column{index}");
                 column.Page = columnFields[index].Page;
                 column.Parent = columnFields[index].Parent;
                 column.Restrictions = columnFields[index].Restrictions;
@@ -3338,7 +3451,7 @@ namespace Stimulsoft.Report.Import
                 columnTotal.Conditions = columnFields[index].Conditions;
                 columnTotal.Font = columnFields[index].Font;
                 columnTotal.Margins = columnFields[index].Margins;
-                columnTotal.Name = $"{crossTable.Name}_ColTotal{index}";
+                columnTotal.Name = CheckComponentName($"{crossTable.Name}_ColTotal{index}");
                 columnTotal.Page = columnFields[index].Page;
                 columnTotal.Parent = columnFields[index].Parent;
                 columnTotal.Restrictions = columnFields[index].Restrictions;
@@ -3383,7 +3496,7 @@ namespace Stimulsoft.Report.Import
                     summary.Conditions = dataFields[index].Conditions;
                     summary.Font = dataFields[index].Font;
                     summary.Margins = dataFields[index].Margins;
-                    summary.Name = $"{crossTable.Name}_Sum{index}";
+                    summary.Name = CheckComponentName($"{crossTable.Name}_Sum{index}");
                     summary.Page = dataFields[index].Page;
                     summary.Parent = dataFields[index].Parent;
                     summary.Restrictions = dataFields[index].Restrictions;
@@ -3422,7 +3535,7 @@ namespace Stimulsoft.Report.Import
                         34,
                         lastColumnWidthForData,
                         defaultRowHeight);
-                    summary.Name = $"{crossTable.Name}_Sum1";
+                    summary.Name = CheckComponentName($"{crossTable.Name}_Sum1");
                     summary.Guid = Guid.NewGuid().ToString();
                 }
 
@@ -3592,7 +3705,7 @@ namespace Stimulsoft.Report.Import
             }
 
             newText.Text = text;
-            newText.Name = name;
+            newText.Name = CheckComponentName(name);
 
             CheckExpression(newText);
 
@@ -3853,7 +3966,7 @@ namespace Stimulsoft.Report.Import
                                 var panel = new StiPanel();
                                 panel.CanGrow = true;
                                 panel.CanShrink = false;
-                                panel.Name = $"Panel{rows[rowIndex][cellIndex].Components[0].Name}";
+                                panel.Name = CheckComponentName($"Panel{rows[rowIndex][cellIndex].Components[0].Name}");
                                 panel.Border = rows[rowIndex][cellIndex].Border;
                                 panel.Components.Add(rows[rowIndex][cellIndex].Components[0]);
                                 panel.Brush = rows[rowIndex][cellIndex].Brush;
@@ -3885,7 +3998,7 @@ namespace Stimulsoft.Report.Import
                     foreach (StiComponent cell in mainPanel.Components)
                         mainPanelWidth += cell.ClientRectangle.Width;
 
-                    mainPanel.Name = $"Row{rowIndex}";
+                    mainPanel.Name = CheckComponentName($"Row{rowIndex}");
                     mainPanel.Border = rows[rowIndex][0].Border;
                     mainPanel.Brush = rows[rowIndex][0].Brush;
                     mainPanel.ClientRectangle = new RectangleD(
@@ -4546,6 +4659,13 @@ namespace Stimulsoft.Report.Import
         {
             return data[offset] == 0x3c && data[offset + 1] == 0x3f && data[offset + 2] == 0x78 && data[offset + 3] == 0x6d
                 && data[offset + 4] == 0x6c;
+        }
+
+        private string CheckComponentName(string baseName)
+        {
+            string newName = StiNameCreation.CreateName(report, baseName, false, true, true);
+            if (newName == baseName) return baseName;
+            return newName;
         }
         #endregion
 
