@@ -32,9 +32,11 @@ using System.IO;
 using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Globalization;
 using System.Net.Mime;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Xml;
 using Stimulsoft.Base.Drawing;
@@ -832,25 +834,82 @@ namespace Stimulsoft.Report.Import
                 }
             }
 
-            if (baseNode.HasChildNodes && baseNode.FirstChild.NodeType == XmlNodeType.Text)
+            if (baseNode.HasChildNodes)
             {
-                string st = Convert.ToString(baseNode.FirstChild.Value);
-
+                string st = "";
+                int newPos2 = 0;
+                if (baseNode.FirstChild.NodeType == XmlNodeType.Text)
+                {
+                    st = Convert.ToString(baseNode.FirstChild.Value);
+                    newPos2 = 9 * 2;
+                }
+                else if (baseNode.FirstChild.NodeType == XmlNodeType.Element && baseNode.FirstChild.Name.Equals("Data"))
+                    st = Regex.Replace(baseNode.FirstChild.InnerText, "[^0-9A-Fa-f]", "");
+                
                 #region read image data
-                int newPos2 = 9 * 2;
-                MemoryStream ms = new MemoryStream();
+                MemoryStream tmp = new MemoryStream();
                 while (newPos2 < st.Length - 1)
                 {
-                    ms.WriteByte((byte)ParseHexTwoCharToInt(st[newPos2], st[newPos2 + 1]));
+                    
+                    tmp.WriteByte((byte)ParseHexTwoCharToInt(st[newPos2], st[newPos2 + 1]));
                     newPos2 += 2;
                 }
-                ms.Seek(0, SeekOrigin.Begin);
+                byte[] raw = tmp.ToArray();
+                byte[] imageBytes = Array.Empty<byte>();
+                if (TryFindBmpOffset(raw, out int bmpOffset, out int bmpLength))
+                {
+                    try
+                    {
+                        var ms = new MemoryStream(raw, bmpOffset, bmpLength, writable: false);
+                        var bmp = new Bitmap(ms);
+                        
+                        if (bmp.RawFormat.Equals(ImageFormat.Bmp))
+                        {
+                            var ms2 = new MemoryStream();
+                            bmp.Save(ms2, ImageFormat.Png);
+                            imageBytes = ms2.ToArray();
+                        }
+                        else
+                            imageBytes = ms.ToArray();
+                    }
+                    catch (Exception)
+                    {
+                        imageBytes = raw;
+                    }
+                }
+                else
+                {
+                    imageBytes = raw;
+                }
+
                 #endregion
 
-                component.ImageBytes = ms.ToArray();
+                component.ImageBytes = imageBytes;
             }
 
             return component;
+        }
+        private static bool TryFindBmpOffset(byte[] data, out int offset, out int length)
+        {
+            offset = -1;
+            length = 0;
+
+            for (int i = 0; i <= data.Length - 54; i++)
+            {
+                if (data[i] != 0x42 || data[i + 1] != 0x4D) continue;
+
+                uint biSize = BitConverter.ToUInt32(data, i + 14);
+                bool validDibSize = biSize == 12 || biSize == 16 || biSize == 40 || biSize == 52 || biSize == 56 || biSize == 64 || biSize == 108 || biSize == 124;
+                if (!validDibSize) continue;
+
+                uint bfSize = BitConverter.ToUInt32(data, i + 2);
+                offset = i;
+                length = (bfSize > 0 && i + bfSize <= data.Length)
+                    ? (int)bfSize
+                    : data.Length - i;
+                return true;
+            }
+            return false;
         }
         #endregion
 
