@@ -70,18 +70,33 @@
     <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="LibExcel, Version=1.0.0.0, Culture=neutral, PublicKeyToken=ebe6666cba19647a, processorArchitecture=MSIL">
-      <HintPath>..\packages\Stimulsoft.LibExcel.2022.4.1\lib\net452\LibExcel.dll</HintPath>
+    <Reference Include="LibExcel, Version=2026.2.1.0, Culture=neutral, PublicKeyToken=73df5cf8c5255bdd, processorArchitecture=MSIL">
+      <HintPath>..\packages\Stimulsoft.LibExcel.2026.2.1\lib\net452\LibExcel.dll</HintPath>
     </Reference>
     <Reference Include="Microsoft.CSharp" />
-    <Reference Include="Stimulsoft.Base, Version=2025.2.4.0, Culture=neutral, PublicKeyToken=ebe6666cba19647a, processorArchitecture=MSIL">
-      <HintPath>..\packages\Stimulsoft.Reports.Engine.2025.2.4\lib\net472\Stimulsoft.Base.dll</HintPath>
+    <Reference Include="Stimulsoft.Base, Version=2026.2.4.0, Culture=neutral, PublicKeyToken=73df5cf8c5255bdd, processorArchitecture=MSIL">
+      <HintPath>..\packages\Stimulsoft.Reports.Engine.2026.2.4\lib\net472\Stimulsoft.Base.dll</HintPath>
     </Reference>
-    <Reference Include="Stimulsoft.Report, Version=2025.2.4.0, Culture=neutral, PublicKeyToken=ebe6666cba19647a, processorArchitecture=MSIL">
-      <HintPath>..\packages\Stimulsoft.Reports.Engine.2025.2.4\lib\net472\Stimulsoft.Report.dll</HintPath>
+    <Reference Include="Stimulsoft.Blockly, Version=2026.2.4.0, Culture=neutral, PublicKeyToken=73df5cf8c5255bdd, processorArchitecture=MSIL">
+      <HintPath>..\packages\Stimulsoft.Reports.Engine.2026.2.4\lib\net472\Stimulsoft.Blockly.dll</HintPath>
     </Reference>
-    <Reference Include="Stimulsoft.Svg, Version=2025.2.4.0, Culture=neutral, PublicKeyToken=ebe6666cba19647a, processorArchitecture=MSIL">
-      <HintPath>..\packages\Stimulsoft.Svg.2025.2.4\lib\net472\Stimulsoft.Svg.dll</HintPath>
+    <Reference Include="Stimulsoft.Data, Version=2026.2.4.0, Culture=neutral, PublicKeyToken=73df5cf8c5255bdd, processorArchitecture=MSIL">
+      <HintPath>..\packages\Stimulsoft.Reports.Engine.2026.2.4\lib\net472\Stimulsoft.Data.dll</HintPath>
+    </Reference>
+    <Reference Include="Stimulsoft.Map, Version=2026.2.4.0, Culture=neutral, PublicKeyToken=73df5cf8c5255bdd, processorArchitecture=MSIL">
+      <HintPath>..\packages\Stimulsoft.Reports.Engine.2026.2.4\lib\net472\Stimulsoft.Map.dll</HintPath>
+    </Reference>
+    <Reference Include="Stimulsoft.Report, Version=2026.2.4.0, Culture=neutral, PublicKeyToken=73df5cf8c5255bdd, processorArchitecture=MSIL">
+      <HintPath>..\packages\Stimulsoft.Reports.Engine.2026.2.4\lib\net472\Stimulsoft.Report.dll</HintPath>
+    </Reference>
+    <Reference Include="Stimulsoft.Report.Check, Version=2026.2.4.0, Culture=neutral, PublicKeyToken=73df5cf8c5255bdd, processorArchitecture=MSIL">
+      <HintPath>..\packages\Stimulsoft.Reports.Engine.2026.2.4\lib\net472\Stimulsoft.Report.Check.dll</HintPath>
+    </Reference>
+    <Reference Include="Stimulsoft.Report.Helper, Version=2026.2.4.0, Culture=neutral, PublicKeyToken=73df5cf8c5255bdd, processorArchitecture=MSIL">
+      <HintPath>..\packages\Stimulsoft.Reports.Engine.2026.2.4\lib\net472\Stimulsoft.Report.Helper.dll</HintPath>
+    </Reference>
+    <Reference Include="Stimulsoft.Svg, Version=2026.2.4.0, Culture=neutral, PublicKeyToken=73df5cf8c5255bdd, processorArchitecture=MSIL">
+      <HintPath>..\packages\Stimulsoft.Svg.2026.2.4\lib\net472\Stimulsoft.Svg.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Data" />
@@ -97,7 +112,15 @@
     </Compile>
     <Compile Include="IStiTreeLog.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="StiReportingServicesHelper.Chart.cs" />
     <Compile Include="StiReportingServicesHelper.cs" />
+    <Compile Include="StiReportingServicesHelper.CustomReportItem.cs" />
+    <Compile Include="StiReportingServicesHelper.Data.cs" />
+    <Compile Include="StiReportingServicesHelper.FixedPage.cs" />
+    <Compile Include="StiReportingServicesHelper.ReportItems.cs" />
+    <Compile Include="StiReportingServicesHelper.Style.cs" />
+    <Compile Include="StiReportingServicesHelper.Table.cs" />
+    <Compile Include="StiReportingServicesHelper.Tablix.cs" />
     <Compile Include="StiTreeViewLog.cs" />
     <Compile Include="StiWarning.cs" />
     <None Include="app.config" />
