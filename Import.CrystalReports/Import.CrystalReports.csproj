@@ -154,6 +154,7 @@
     <Compile Include="Formulas\StiCrystalTranslator.Functions.cs" />
     <Compile Include="StiCrystalFormulaField.cs" />
     <Compile Include="StiCrystalReportResolver.cs" />
+    <Compile Include="StiCrystalReportsHelper.Data.cs" />
     <Compile Include="StiCrystalReportsHelper.Formulas.cs" />
     <Compile Include="IStiTreeLog.cs" />
     <Compile Include="MainForm.cs">

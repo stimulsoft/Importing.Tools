@@ -415,7 +415,13 @@ namespace Import.CrystalReports.Formulas
                 return range;
             }
 
-            return new StiCrystalExpression(reference.Expression, reference.Type ?? typeof(object), isAtomic: true)
+            // Crystal reads the strings of a database without the trailing spaces, Stimulsoft keeps them: a column
+            // of the type char, or a value with a space at the end, would compare and concatenate differently
+            var code = reference.Expression;
+            if (!string.IsNullOrEmpty(reference.DataSourceName) && reference.Type == typeof(string))
+                code += ".TrimEnd()";
+
+            return new StiCrystalExpression(code, reference.Type ?? typeof(object), isAtomic: true)
             {
                 Reference = reference
             };

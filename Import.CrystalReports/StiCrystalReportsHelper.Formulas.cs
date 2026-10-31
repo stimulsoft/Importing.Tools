@@ -30,7 +30,6 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Reflection;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
 using Import.CrystalReports.Formulas;
@@ -535,22 +534,11 @@ namespace Import.CrystalReports
         }
 
         /// <summary>
-        /// Returns the object of the RAS behind a report object. The property is private in the base class
-        /// ReportObject, so it is searched through the base types: the reflection of a derived type doesn't see it.
+        /// Returns the object of the RAS behind a report object; the property is private in the base class.
         /// </summary>
         private static Ras.ISCRReportObject GetRasReportObject(ReportObject obj)
         {
-            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public |
-                BindingFlags.DeclaredOnly;
-
-            for (var type = obj?.GetType(); type != null; type = type.BaseType)
-            {
-                var property = type.GetProperty("RasReportObject", flags);
-                if (property != null)
-                    return property.GetValue(obj, null) as Ras.ISCRReportObject;
-            }
-
-            return null;
+            return GetRasObject(obj, "RasReportObject") as Ras.ISCRReportObject;
         }
 
         /// <summary>

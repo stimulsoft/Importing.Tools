@@ -798,6 +798,14 @@ namespace Import.CrystalReports
                         case "OLE DB (ADO)":
                             string provider = "Unknown";
                             if (htLogon.ContainsKey("Provider")) provider = (string)htLogon["Provider"];
+                            if (IsSqlServerProvider(provider))
+                            {
+                                databaseName = DataBaseName;
+                                database = new StiSqlDatabase(databaseName, GetSqlServerConnectionString(
+                                    ServerName, DataBaseName, htLogon, table.LogOnInfo.ConnectionInfo.UserID));
+                                break;
+                            }
+
                             if (provider == "SQLOLEDB")
                             {
                                 databaseConnectionString = string.Format(
@@ -821,6 +829,12 @@ namespace Import.CrystalReports
                             }
                             database = new StiOleDbDatabase(databaseName, databaseConnectionString);
                             //DataBaseName = databaseName;
+                            break;
+
+                        case "ODBC (RDO)":
+                            databaseName = DataBaseName;
+                            database = new StiOdbcDatabase(databaseName, GetOdbcConnectionString(
+                                ServerName, htLogon, table.LogOnInfo.ConnectionInfo.UserID));
                             break;
 
                         case "ADO.NET":
@@ -908,25 +922,29 @@ namespace Import.CrystalReports
                 }
 
                 #region Make DataSource
-                string tableNameValidated = (table.Name == StiNameValidator.CorrectName(table.Name) ? table.Name : "\"" + table.Name + "\"");
                 StiDataSource dataSource = null;
                 if ((htTableNameToDatabase[table.Name] as StiOleDbDatabase) != null)
                 {
                     string nameInSource = database.Name;
                     dataSource = new StiOleDbSource(nameInSource, StiNameValidator.CorrectName(table.Name), table.Name);
-                    (dataSource as StiOleDbSource).SqlCommand = string.Format("select * from {0}", tableNameValidated);
                 }
                 if ((htTableNameToDatabase[table.Name] as StiXmlDatabase) != null)
                 {
                     string nameInSource = database.Name + "." + table.Name;
                     dataSource = new StiDataTableSource(nameInSource, StiNameValidator.CorrectName(table.Name), table.Name);
                 }
+                if ((htTableNameToDatabase[table.Name] as StiOdbcDatabase) != null)
+                {
+                    dataSource = new StiOdbcSource(database.Name, StiNameValidator.CorrectName(table.Name), table.Name);
+                }
                 if (dataSource == null)
                 {
-                    string nameInSource = database.Name + "." + table.Name;
-                    dataSource = new StiSqlSource(nameInSource, StiNameValidator.CorrectName(table.Name), table.Name);
-                    (dataSource as StiSqlSource).SqlCommand = string.Format("select * from {0}", tableNameValidated);
+                    dataSource = new StiSqlSource(database.Name, StiNameValidator.CorrectName(table.Name), table.Name);
                 }
+
+                var sqlSource = dataSource as StiSqlSource;
+                if (sqlSource != null)
+                    AddSqlCommand(sqlSource, table);
 
                 foreach (DatabaseFieldDefinition field in table.Fields)
                 {
@@ -1261,6 +1279,7 @@ namespace Import.CrystalReports
                 }
 
                 resolver.AddReference("?" + parameter.ParameterFieldName, parameterReference);
+                ApplyParameterValues(variable, parameter);
 
                 //htVariableConversion.Add("?" + parameter.ParameterFieldName, parameterName);
                 htVariableConversion["?" + parameter.ParameterFieldName] = parameterName;
