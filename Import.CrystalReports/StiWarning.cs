@@ -65,6 +65,14 @@ namespace Import.CrystalReports
                 " On the current moment parsing and syntax converting cannot be done, expressions is written 'as is'." +
                 " Therefore, in many cases it is required further manual correction of expressions.");
         }
+
+        public static StiWarning GetWarningFormula(string place, string reason)
+        {
+            return new StiWarning(
+                string.Format("Formula '{0}': {1}", place, reason),
+                "The formula can't be translated to an expression of Stimulsoft Reports, its text is kept 'as is'." +
+                " Please correct the expression manually.");
+        }
         #endregion
 
         #region this

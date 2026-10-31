@@ -62,7 +62,6 @@ namespace Import.CrystalReports
         private GroupBox groupBoxInformation;
         private TreeView treeViewLog;
         private CheckBox checkBoxUsePrimitives;
-        private CheckBox checkBoxUseFunction;
         private GroupBox groupBox2;
 		/// <summary>
 		/// Required designer variable.
@@ -123,7 +122,6 @@ namespace Import.CrystalReports
             this.groupBoxInformation = new System.Windows.Forms.GroupBox();
             this.treeViewLog = new System.Windows.Forms.TreeView();
             this.checkBoxUsePrimitives = new System.Windows.Forms.CheckBox();
-            this.checkBoxUseFunction = new System.Windows.Forms.CheckBox();
             this.groupBox2 = new System.Windows.Forms.GroupBox();
             this.groupBox1.SuspendLayout();
             this.groupBoxInformation.SuspendLayout();
@@ -261,22 +259,11 @@ namespace Import.CrystalReports
             this.checkBoxUsePrimitives.Text = "Use primitives instead of shapes for Line and Box";
             this.checkBoxUsePrimitives.UseVisualStyleBackColor = true;
             // 
-            // checkBoxUseFunction
-            // 
-            this.checkBoxUseFunction.AutoSize = true;
-            this.checkBoxUseFunction.Location = new System.Drawing.Point(9, 39);
-            this.checkBoxUseFunction.Name = "checkBoxUseFunction";
-            this.checkBoxUseFunction.Size = new System.Drawing.Size(176, 17);
-            this.checkBoxUseFunction.TabIndex = 1;
-            this.checkBoxUseFunction.Text = "Use functions for Formula Fields";
-            this.checkBoxUseFunction.UseVisualStyleBackColor = true;
-            // 
             // groupBox2
             // 
             this.groupBox2.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
             this.groupBox2.Controls.Add(this.checkBoxUsePrimitives);
-            this.groupBox2.Controls.Add(this.checkBoxUseFunction);
             this.groupBox2.Location = new System.Drawing.Point(8, 136);
             this.groupBox2.Name = "groupBox2";
             this.groupBox2.Size = new System.Drawing.Size(677, 63);
@@ -386,7 +373,7 @@ namespace Import.CrystalReports
                 StiCrystalReportsHelper convertor = new StiCrystalReportsHelper();
                 TreeView tv = new TreeView();
                 StiTreeViewLog log2 = new StiTreeViewLog(tv);
-                StiReport stimulReport = convertor.Convert(crystalReport, log2, checkBoxUsePrimitives.Checked, checkBoxUseFunction.Checked);
+                StiReport stimulReport = convertor.Convert(crystalReport, log2, checkBoxUsePrimitives.Checked);
 
                 log.CurrentNode.Text += "OK";
                 log.CloseLog();

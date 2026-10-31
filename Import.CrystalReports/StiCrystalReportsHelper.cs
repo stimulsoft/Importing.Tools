@@ -44,6 +44,7 @@ using Stimulsoft.Base;
 using Stimulsoft.Base.Drawing;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
+using Import.CrystalReports.Formulas;
 using System.Runtime.ExceptionServices;
 //using CrystalDecisions.ReportAppServer.ReportDefModel;
 
@@ -55,7 +56,7 @@ namespace Import.CrystalReports
     /// </summary>
     [System.Security.SecuritySafeCritical]
     [System.Security.SuppressUnmanagedCodeSecurity]
-	public sealed class StiCrystalReportsHelper
+	public sealed partial class StiCrystalReportsHelper
 	{
         #region Enums
         public enum CrTextFormatEnum
@@ -76,8 +77,6 @@ namespace Import.CrystalReports
         #region Options
         //if true - use StiPrimitives, else use Shapes
         private bool usePrimitives = true;
-        //if true - use variables as functions, else use variables as string
-        private bool useFunctions = false;
         #endregion
 
         #region Constants
@@ -106,7 +105,6 @@ namespace Import.CrystalReports
         private StiReport stimulReport = null;
         private Hashtable htNames = null;
         private ArrayList dataSourcesOnThisPage = null;
-        private List<string> methods = null;
         #endregion
 
         public List<StiWarning> warningList = new List<StiWarning>();
@@ -218,114 +216,6 @@ namespace Import.CrystalReports
                 if (!(Char.IsLetterOrDigit(sb[pos]) || sb[pos] == '_')) sb[pos] = '_';
             }
             return sb.ToString();
-        }
-
-        private bool CheckFunction(StiVariable variable, string value)
-        {
-            bool flag = true;
-            string formula = value.Trim();
-            formula = NormalizeEndOfLineSymbols(formula).Replace("\r\n", " \r\n ");
-
-            try
-            {
-                formula = formula.Replace("ToNumber", "double.Parse");
-                formula = formula.Replace(" {", " ").Replace("{", " ");
-                formula = formula.Replace("} ", " ").Replace("}", " ");
-                formula = formula.Replace(" AND ", " && ");
-                formula = formula.Replace(" and ", " && ");
-                formula = formula.Replace(" OR ", " || ");
-                formula = formula.Replace(" or ", " || ");
-
-                formula = formula.Replace("IsNull", "IsNull1");
-                formula = formula.Replace("isnull", "IsNull1");
-                formula = formula.Replace("trim", "Trim");
-                formula = formula.Replace("length", "Length");
-                formula = formula.Replace("Pagenumber", "PageNumber");
-
-                formula = formula.Replace("Chr(13)", "\"\\r\"");
-                formula = formula.Replace("CHR(13)", "\"\\r\"");
-                formula = formula.Replace("ChrW(13)", "\"\\r\"");
-                formula = formula.Replace("Chr(10)", "\"\\n\"");
-                formula = formula.Replace("CHR(10)", "\"\\n\"");
-                formula = formula.Replace("ChrW(10)", "\"\\n\"");
-
-                formula = formula.Replace("<=", "\x18\x01");
-                formula = formula.Replace(">=", "\x18\x02");
-                formula = formula.Replace(":=", "\x18\x03");
-                formula = formula.Replace("=", "==");
-                formula = formula.Replace("\x18\x01", "<=");
-                formula = formula.Replace("\x18\x02", ">=");
-                formula = formula.Replace("\x18\x03", ":=");
-                formula = formula.Replace("<>", "!=");
-
-                if (formula.Contains(":="))
-                {
-                    formula = formula.Replace(" If ", " if(");
-                    formula = formula.Replace(" if ", " if(");
-                    formula = formula.Replace(" then ", " ) ");
-                    formula = formula.Replace(" Then ", " ) ");
-                    formula = formula.Replace(" Else ", " else ");
-
-                    formula = formula.Replace(":=", "=");
-
-                    //identation
-                    List<string> lines = SplitString(formula);
-                    for (int index = 0; index < lines.Count; index++)
-                    {
-                        lines[index] = "\t" + lines[index] + " ";
-                    }
-
-                    //make result
-                    string result = "null";
-                    string lastLine = lines[lines.Count - 1].Trim();
-                    if (!lastLine.Contains(" ") && !lastLine.Contains(":="))
-                    {
-                        result = lastLine;
-                        lines.RemoveAt(lines.Count - 1);
-                    }
-
-                    //add method description
-                    lines.Insert(0, string.Format("private {0} mt_{1}()", variable.Type.Name.ToString(), variable.Name.ToString()));
-                    lines.Insert(1, "{");
-                    lines.Add("\treturn " + result + ";");
-                    lines.Add("}");
-                    lines.Add(string.Empty);
-
-                    //add to methods list
-                    foreach (string line in lines)
-                    {
-                        methods.Add(line);
-                    }
-
-                    formula = string.Format("mt_{0}()", variable.Name.ToString());
-                }
-                else
-                {
-                    if (formula.StartsWith("if ")) formula = " " + formula;
-                    formula = formula.Replace(" if ", " ");
-                    formula = formula.Replace(" If ", " ");
-                    formula = formula.Replace(" then ", " ? ");
-                    formula = formula.Replace(" Then ", " ? ");
-                    formula = formula.Replace(" else ", " : ");
-                    formula = formula.Replace(" Else ", " : ");
-
-                    formula = formula.Replace("UpperCase", "ToUpperCase");
-                    formula = formula.Replace("LowerCase", "ToLowerCase");
-
-                    //formula = formula.Replace("\r\n", " ").Replace("\r", " ").Replace("\n", " ");
-                }
-
-                variable.InitBy = StiVariableInitBy.Expression;
-                variable.Value = formula;
-            }
-            catch
-            {
-                variable.InitBy = StiVariableInitBy.Value;
-                variable.Type = typeof(string);
-                variable.Value = value;
-                flag = false;
-            }
-            return flag;
         }
 
         private static string NormalizeEndOfLineSymbols(string inputText)
@@ -489,16 +379,13 @@ namespace Import.CrystalReports
 
         public StiReport Convert(ReportDocument crystalReport)
         {
-            return Convert(crystalReport, null, true, false);
+            return Convert(crystalReport, null, true);
         }
     
-		public StiReport Convert(ReportDocument crystalReport, IStiTreeLog log, bool usePrimitives, bool useFunctions)
+		public StiReport Convert(ReportDocument crystalReport, IStiTreeLog log, bool usePrimitives)
 		{
             this.usePrimitives = usePrimitives;
-            this.useFunctions = useFunctions;
             log.OpenLog("Report");
-
-            methods = new List<string>();
 
 			stimulReport = new StiReport();
             stimulReport.MetaTags.Add("InternalVersion", internalVersion);
@@ -581,38 +468,6 @@ namespace Import.CrystalReports
             }
             #endregion
 
-            #region Add methods
-            //if (methods.Count > 0)
-            {
-                int methodsPos = stimulReport.Script.IndexOf("#region StiReport");
-                if (methodsPos > 0)
-                {
-                    methodsPos -= 9;
-
-                    methods.AddRange(new string[] {
-                        "private string ToText(string x) { return x; }",
-                        "private string ToText(double x) { return x.ToString(); }",
-                        "private string ToText(double x, int y) { return x.ToString(\"F\" + y.ToString()); }",
-                        "private string ToText(DateTime x, string y) { return x.ToString(y); }",
-                        "private string Trim(string st) { return st.Trim(); }",
-                        "private string TrimRight(string st) { return st.TrimEnd(); }",
-                        "private string TrimLeft(string st) { return st.TrimStart(); }",
-                        "private string UpperCase(string st) { return st.ToUpper(); }",
-                        "private string LowerCase(string st) { return st.ToLower(); }",
-                        "private bool IsNull1(object obj) { return obj == null || obj == DBNull.Value; }",
-                        "private DateTime DateValue(object obj) { return (DateTime)Stimulsoft.Base.StiConvert.ChangeType(obj, typeof(DateTime), true); }"
-                    });
-
-                    foreach (string st in methods)
-                    {
-                        string st2 = "\t\t" + st + "\r\n";
-                        stimulReport.Script = stimulReport.Script.Insert(methodsPos, st2);
-                        methodsPos += st2.Length;
-                    }
-                }
-            }
-            #endregion
-
             log.CloseLog();
 
 			return stimulReport;
@@ -621,6 +476,8 @@ namespace Import.CrystalReports
         #region Adds
         private void AddPage(StiPage page, ReportDocument crystalReport, bool isSubReport, IStiTreeLog log)
         {
+            InitFormulas();
+
             #region Page Parameters
             page.TitleBeforeHeader = true;
             //page.LargeHeight = true;
@@ -1205,6 +1062,12 @@ namespace Import.CrystalReports
                     string fieldNameCR = field.TableName + "." + field.Name;
                     string fieldNameSR = dsRelationName + FieldNameCorrection(field.Name);
                     htFieldNameConversion[fieldNameCR] = fieldNameSR;
+
+                    resolver.AddReference(fieldNameCR, new StiCrystalReference(fieldNameSR, ConvertType(field.ValueType))
+                    {
+                        DataSourceName = ds.Name,
+                        ColumnName = FieldNameCorrection(field.Name)
+                    });
                 }
             }
             #endregion
@@ -1279,23 +1142,12 @@ namespace Import.CrystalReports
                     StiVariable variable = new StiVariable("Formula Fields");
                     variable.Name = formulaNameNormalized;
                     variable.Alias = formulaNameNormalized;
-                    variable.Type = ConvertType(formula.ValueType);
+                    variable.Type = typeof(string);
                     variable.ReadOnly = true;
-                    if (useFunctions)
-                    {
-                        //value = ReplaceFieldsAndVariables(value);
-                        CheckFunction(variable, value);
-                        warningList.Add(StiWarning.GetWarningFormulaField(formulaName));
-                    }
-                    else
-                    {
-                        value = value.Replace("\n", " ");
-
-                        variable.InitBy = StiVariableInitBy.Value;
-                        variable.Type = typeof(string);
-                        variable.Value = value;
-                    }
+                    variable.Value = value.Replace("\n", " ");
                     stimulReport.Dictionary.Variables.Add(variable);
+
+                    AddFormulaField(formulaName, formula.Text ?? string.Empty, variable, ConvertType(formula.ValueType));
 
                     //htVariableConversion.Add(formulaName, ReplaceSymbols(formulaName));
                     htVariableConversion[formulaName] = formulaNameNormalized;
@@ -1336,7 +1188,8 @@ namespace Import.CrystalReports
                     variable.Alias = formulaNameNormalized;
                     if (flag)
                     {
-                        variable.Type = ConvertType(formula.ValueType);
+                        //Totals.Sum returns decimal
+                        variable.Type = typeof(decimal);
                         variable.ReadOnly = true;
                         variable.InitBy = StiVariableInitBy.Expression;
                     }
@@ -1348,6 +1201,9 @@ namespace Import.CrystalReports
                     }
                     variable.Value = value;
                     stimulReport.Dictionary.Variables.Add(variable);
+
+                    if (flag)
+                        resolver.AddReference(formulaName, new StiCrystalReference(variable.Name, variable.Type));
 
                     //htVariableConversion.Add(formulaName, ReplaceSymbols(formulaName));
                     htVariableConversion[formulaName] = formulaNameNormalized;
@@ -1391,6 +1247,21 @@ namespace Import.CrystalReports
                 //variable.Value = string.Empty;
                 stimulReport.Dictionary.Variables.Add(variable);
 
+                var parameterReference = new StiCrystalReference(parameterName, variable.Type);
+                if (parameter.DiscreteOrRangeKind == DiscreteOrRangeKind.RangeValue)
+                {
+                    variable.Type = GetRangeType(variable.Type);
+                    parameterReference.IsRange = true;
+                }
+
+                else if (parameter.EnableAllowMultipleValue)
+                {
+                    variable.Type = GetListType(variable.Type);
+                    parameterReference.IsMultiValue = true;
+                }
+
+                resolver.AddReference("?" + parameter.ParameterFieldName, parameterReference);
+
                 //htVariableConversion.Add("?" + parameter.ParameterFieldName, parameterName);
                 htVariableConversion["?" + parameter.ParameterFieldName] = parameterName;
 
@@ -1401,17 +1272,6 @@ namespace Import.CrystalReports
             AddRangeToHashtable(textConversion, htVariableConversion);
             flagTextConversionSorted = false;
 
-            foreach (StiVariable var in stimulReport.Dictionary.Variables)
-            {
-                if (var.Category == "Formula Fields" && useFunctions)
-                {
-                    //var.Value = ReplaceFieldsAndVariables(var.Value);
-                    foreach (DictionaryEntry de in htVariableConversion)
-                    {
-                        if (var.Value.Contains((string)de.Key)) var.Value = var.Value.Replace((string)de.Key, (string)de.Value);
-                    }
-                }
-            }
             #endregion
 
             //textConversion = new DictionaryEntry[htFieldNameConversion.Count + htVariableConversion.Count];
@@ -1472,6 +1332,8 @@ namespace Import.CrystalReports
             AddBands(page, crystalReport, mainDataSource, log);
             log.CloseNode();
 
+            ApplyPendingTranslations();
+
             #region Fill SummaryFields with GroupBands names
             if (summaryFieldsList.Count > 0)
             {
@@ -1484,7 +1346,7 @@ namespace Import.CrystalReports
                         {
                             StiComponent component = (StiComponent)dicEntry.Key;
                             StiText text = component as StiText;
-                            text.Text = text.Text.Value.Replace("{},", (string)dicEntryGroup.Value + ",");
+                            text.Text = text.Text.Value.Replace("{},", (string)dicEntryGroup.Value + ",").Replace(",)}", ")}");
                         }
                     }
                 }
@@ -1501,6 +1363,7 @@ namespace Import.CrystalReports
         private void AddBands(StiPage page, ReportDocument crystalReport, StiDataSource mainDataSource, IStiTreeLog log)
 		{
 			double bandPosition = 0;
+            var hasRecordSelection = false;
             for (int sectionIndex = 0; sectionIndex < crystalReport.ReportDefinition.Sections.Count; sectionIndex++)
 			{
                 Section section = crystalReport.ReportDefinition.Sections[sectionIndex];
@@ -1522,45 +1385,6 @@ namespace Import.CrystalReports
 
                     band.Height = section.Height * unit;
                     band.Brush = new StiSolidBrush(section.SectionFormat.BackgroundColor);
-
-                    #region Suppress
-                    //band.Enabled = !section.SectionFormat.EnableSuppress;
-
-                    bool hasSuppressExpression = false;
-                    object objCondition = GetPropertyFromHiddenObject(section.SectionFormat, "RasSectionFormat.ConditionFormulas");
-                    if (objCondition != null)
-                    {
-                        var formulaClass = objCondition as CrystalDecisions.ReportAppServer.ReportDefModel.SectionAreaFormatConditionFormulasClass;
-                        var conditionFormula = formulaClass[CrystalDecisions.ReportAppServer.ReportDefModel.CrSectionAreaFormatConditionFormulaTypeEnum.crSectionAreaConditionFormulaTypeEnableSuppress];
-                        if ((conditionFormula != null) && !string.IsNullOrWhiteSpace(conditionFormula.Text))
-                        {
-                            var text = ReplaceFieldsAndVariables(conditionFormula.Text);
-                            var tempVariable = new StiVariable();
-                            CheckFunction(tempVariable, text);
-
-                            StiCondition condition = new StiCondition();
-                            condition.Item = StiFilterItem.Expression;
-                            condition.Expression = tempVariable.Value;
-                            band.Conditions.Add(condition);
-
-                            hasSuppressExpression = true;
-                        }
-                    }
-
-                    if (section.SectionFormat.EnableSuppress && !hasSuppressExpression)
-                    {
-                        band.Brush = new StiHatchBrush(HatchStyle.BackwardDiagonal, Color.DarkGray, Color.White);
-                        band.Enabled = false;
-                    }
-
-                    if (hasSuppressExpression || !band.Enabled)
-                    {
-                        if (band is StiDataBand)
-                        {
-                            (band as StiDataBand).CalcInvisible = true;
-                        }
-                    }
-                    #endregion
 
                     band.Parent = page;
                     band.Page = page;
@@ -1590,6 +1414,12 @@ namespace Import.CrystalReports
 						StiDataBand dataBand = band as StiDataBand;
 						dataBand.DataSourceName = mainDataSource.Name;
 						dataBand.Sort = sortFields;
+
+                            if (!hasRecordSelection)
+                            {
+                                AddRecordSelection(dataBand, crystalReport.RecordSelectionFormula);
+                                hasRecordSelection = true;
+                            }
 					}
                     if (band is StiGroupHeaderBand || band is StiGroupFooterBand || band is StiDataBand)
                     {
@@ -1622,6 +1452,8 @@ namespace Import.CrystalReports
                                         }
                                     }
                                     groupHeaderBand.Condition.Value = field;
+                                    if (de.Key != null)
+                                        resolver.AddGroupBand((string)de.Key, band.Name);
                                     if (de.Value == null)
                                     {
                                         de.Value = band.Name;
@@ -1670,6 +1502,37 @@ namespace Import.CrystalReports
                             if ((band as IStiPrintAtBottom) != null) child.PrintAtBottom = (band as IStiPrintAtBottom).PrintAtBottom;
                         }
                     }
+
+                    #region Suppress
+                    //band.Enabled = !section.SectionFormat.EnableSuppress;
+
+                    bool hasSuppressExpression = false;
+                    object objCondition = GetPropertyFromHiddenObject(section.SectionFormat, "RasSectionFormat.ConditionFormulas");
+                    if (objCondition != null)
+                    {
+                        var formulaClass = objCondition as CrystalDecisions.ReportAppServer.ReportDefModel.SectionAreaFormatConditionFormulasClass;
+                        var conditionFormula = formulaClass[CrystalDecisions.ReportAppServer.ReportDefModel.CrSectionAreaFormatConditionFormulaTypeEnum.crSectionAreaConditionFormulaTypeEnableSuppress];
+                        if ((conditionFormula != null) && !string.IsNullOrWhiteSpace(conditionFormula.Text))
+                        {
+                            AddSuppressCondition(band, conditionFormula.Text, band.Name);
+                            hasSuppressExpression = true;
+                        }
+                    }
+
+                    if (section.SectionFormat.EnableSuppress && !hasSuppressExpression)
+                    {
+                        band.Brush = new StiHatchBrush(HatchStyle.BackwardDiagonal, Color.DarkGray, Color.White);
+                        band.Enabled = false;
+                    }
+
+                    if (!band.Enabled)
+                    {
+                        if (band is StiDataBand)
+                        {
+                            (band as StiDataBand).CalcInvisible = true;
+                        }
+                    }
+                    #endregion
 
 					page.Components.Add(band);
 
@@ -1738,6 +1601,9 @@ namespace Import.CrystalReports
 				if (comp != null)
 				{
                     comp.Name = CheckComponentsNames(obj.Name);
+                    var currentFieldValue = GetCurrentFieldValue(obj, comp);
+                    AddSuppressCondition(comp, GetSuppressFormula(obj), comp.Name, currentFieldValue);
+                    AddFormatConditions(comp, obj, currentFieldValue);
 
                     if ((comp is StiVerticalLinePrimitive) || (comp is StiRectanglePrimitive))
                     {
@@ -2088,10 +1954,16 @@ namespace Import.CrystalReports
                 string groupField = sfd.Group.ConditionField.FormulaName.Substring(1, sfd.Group.ConditionField.FormulaName.Length - 2);
                 dicEntry.Value = groupField;
                 summaryFieldsList.Add(dicEntry);
+                if (operation == "Count")
+                    return "{Count({},)}";
+
                 return "{" + operation + "({}," + ReplaceFieldsAndVariables(field) + ")}";
             }
             else
             {
+                if (operation == "Count")
+                    return "{Count()}";
+
                 return "{" + operation + "(" + ReplaceFieldsAndVariables(field) + ")}";
             }
         }
@@ -2207,6 +2079,9 @@ namespace Import.CrystalReports
                 text.Angle = GetTextRotationAngle(obj, "RasFieldObject");
 
                 text.Text = TypeField(obj, text);
+
+                if (obj.DataSource.Kind == FieldKind.FormulaField)
+                    AddFormulaFieldText(text, obj.DataSource.FormulaName.Trim('{', '}'));
 
                 component = text;
             }
