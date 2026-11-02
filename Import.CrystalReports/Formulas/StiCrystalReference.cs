@@ -28,6 +28,7 @@
 #endregion Copyright (C) 2003-2026 Stimulsoft
 
 using System;
+using System.Collections.Generic;
 
 namespace Import.CrystalReports.Formulas
 {
@@ -71,6 +72,12 @@ namespace Import.CrystalReports.Formulas
         /// True if the expression contains a summary, like Sum or Count; the formulas which use it get this flag too.
         /// </summary>
         public bool HasSummaries { get; set; }
+
+        /// <summary>
+        /// The fields of a database which a formula reads in any case: Crystal gives NULL for the formula when one
+        /// of them is NULL. Null for the other references.
+        /// </summary>
+        public List<StiCrystalReference> NullFields { get; set; }
         #endregion
 
         public StiCrystalReference(string expression, Type type)

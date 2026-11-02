@@ -40,6 +40,7 @@ using Stimulsoft.Report;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Dictionary;
 using Ras = CrystalDecisions.ReportAppServer.ReportDefModel;
+using RasData = CrystalDecisions.ReportAppServer.DataDefModel;
 
 namespace Import.CrystalReports
 {
@@ -88,10 +89,35 @@ namespace Import.CrystalReports
         /// Adds a formula field. Until the formula is translated its variable is a string with the text of the formula:
         /// the variable checks its value, so the declared type is set together with the translated expression.
         /// </summary>
-        private void AddFormulaField(string name, string text, StiVariable variable, Type declaredType)
+        private void AddFormulaField(string name, string text, StiVariable variable, Type declaredType,
+            bool nullsAsDefault)
         {
-            formulaFields[name] = new StiCrystalFormulaField(name, text, variable, declaredType);
+            formulaFields[name] = new StiCrystalFormulaField(name, text, variable, declaredType)
+            {
+                NullsAsDefault = nullsAsDefault
+            };
             resolver.AddReference(name, new StiCrystalReference(variable.Name, declaredType));
+        }
+
+        /// <summary>
+        /// The option of the formula "Default Values for Nulls" or the option of the report which converts NULL
+        /// of the fields to the default values.
+        /// </summary>
+        private static bool GetNullsAsDefault(ReportDocument report, FormulaFieldDefinition formula)
+        {
+            // Some reports don't give the options, then the formula keeps the default of Crystal
+            try
+            {
+                if (report.ReportOptions.ConvertNullFieldToDefault)
+                    return true;
+
+                var rasFormula = GetRasObject(formula, "RasFormulaField") as RasData.ISCRFormulaField;
+                return rasFormula?.FormulaNullTreatment == RasData.CrFormulaNullTreatmentEnum.crTreatNullAsDefaultValue;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         /// <summary>
@@ -158,6 +184,9 @@ namespace Import.CrystalReports
                     reference.Expression = "(" + expression.Code + ")";
                     reference.HasSummaries = true;
                 }
+
+                if (!formula.NullsAsDefault)
+                    reference.NullFields = StiCrystalNullFields.Collect(StiCrystalParser.Parse(formula.Text), resolver);
             }
             catch (StiCrystalFormulaException e)
             {
@@ -368,9 +397,30 @@ namespace Import.CrystalReports
             pendingTranslations.Add(() =>
             {
                 StiCrystalFormulaField formula;
-                if (formulaFields.TryGetValue(formulaName, out formula) && formula.InlineExpression != null)
+                if (!formulaFields.TryGetValue(formulaName, out formula))
+                    return;
+
+                if (formula.InlineExpression != null)
                     text.Text = "{" + formula.InlineExpression + "}";
+
+                ApplyNullFields(text, resolver.GetReference(formulaName)?.NullFields);
             });
+        }
+
+        /// <summary>
+        /// Crystal prints nothing for a formula which reads a NULL field, so the text shows an empty string then.
+        /// </summary>
+        private static void ApplyNullFields(StiText text, List<StiCrystalReference> fields)
+        {
+            var value = text.Text?.Value;
+            if (fields == null || fields.Count == 0 || string.IsNullOrEmpty(value) || !value.StartsWith("{") ||
+                !value.EndsWith("}") || value.LastIndexOf('{') != 0)
+                return;
+
+            var condition = string.Join(" || ",
+                fields.Select(f => $"IsNull({f.DataSourceName}, \"{f.ColumnName}\")"));
+
+            text.Text = $"{{IIF({condition}, \"\", {value.Substring(1, value.Length - 2)})}}";
         }
 
         /// <summary>

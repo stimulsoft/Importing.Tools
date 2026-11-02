@@ -62,6 +62,12 @@ namespace Import.CrystalReports
         /// a component instead of the reference to the variable. Null for other formulas.
         /// </summary>
         public string InlineExpression { get; set; }
+
+        /// <summary>
+        /// True if Crystal calculates the formula with the default values instead of NULL, by the option of the
+        /// formula or of the report; otherwise a NULL field which the formula reads gives NULL for the formula.
+        /// </summary>
+        public bool NullsAsDefault { get; set; }
         #endregion
 
         public StiCrystalFormulaField(string name, string text, StiVariable variable, Type declaredType)

@@ -153,6 +153,7 @@
     <Compile Include="Formulas\StiCrystalFormulaException.cs" />
     <Compile Include="Formulas\StiCrystalLexer.cs" />
     <Compile Include="Formulas\StiCrystalNode.cs" />
+    <Compile Include="Formulas\StiCrystalNullFields.cs" />
     <Compile Include="Formulas\StiCrystalParser.cs" />
     <Compile Include="Formulas\StiCrystalReference.cs" />
     <Compile Include="Formulas\StiCrystalToken.cs" />
