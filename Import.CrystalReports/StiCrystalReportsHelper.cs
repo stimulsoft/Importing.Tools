@@ -2103,6 +2103,7 @@ namespace Import.CrystalReports
                 text.Angle = GetTextRotationAngle(obj, "RasFieldObject");
 
                 text.Text = TypeField(obj, text);
+                ApplyFieldFormat(text, obj);
 
                 if (obj.DataSource.Kind == FieldKind.FormulaField)
                     AddFormulaFieldText(text, obj.DataSource.FormulaName.Trim('{', '}'));

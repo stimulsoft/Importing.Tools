@@ -73,6 +73,14 @@ namespace Import.CrystalReports
                 "The formula can't be translated to an expression of Stimulsoft Reports, its text is kept 'as is'." +
                 " Please correct the expression manually.");
         }
+
+        public static StiWarning GetWarningFormat(string objectName, string property, string formula)
+        {
+            return new StiWarning(
+                string.Format("Format of '{0}': {1} is calculated by the formula {2}", objectName, property, formula),
+                "A format of Stimulsoft Reports has the fixed settings, so the value of the formula is not used and" +
+                " the static setting of the field is kept. Please correct the format manually if it is needed.");
+        }
         #endregion
 
         #region this
