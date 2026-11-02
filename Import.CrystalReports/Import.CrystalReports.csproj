@@ -76,6 +76,12 @@
       <HintPath>libs\CrystalDecisions.CrystalReports.Engine.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="CrystalDecisions.ReportAppServer.CommonObjectModel, Version=13.0.2000.0, Culture=neutral, PublicKeyToken=692fbea5521e1304, processorArchitecture=MSIL">
+      <SpecificVersion>False</SpecificVersion>
+      <EmbedInteropTypes>False</EmbedInteropTypes>
+      <HintPath>libs\CrystalDecisions.ReportAppServer.CommonObjectModel.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="CrystalDecisions.ReportAppServer.DataDefModel, Version=13.0.2000.0, Culture=neutral, PublicKeyToken=692fbea5521e1304, processorArchitecture=AMD64">
       <SpecificVersion>False</SpecificVersion>
       <EmbedInteropTypes>False</EmbedInteropTypes>
@@ -156,6 +162,7 @@
     <Compile Include="StiCrystalReportResolver.cs" />
     <Compile Include="StiCrystalReportsHelper.Data.cs" />
     <Compile Include="StiCrystalReportsHelper.Formulas.cs" />
+    <Compile Include="StiCrystalReportsHelper.Objects.cs" />
     <Compile Include="IStiTreeLog.cs" />
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>

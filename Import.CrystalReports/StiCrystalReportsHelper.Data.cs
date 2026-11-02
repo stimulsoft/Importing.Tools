@@ -38,6 +38,7 @@ using System.Text.RegularExpressions;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
 using Stimulsoft.Report;
+using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Dictionary;
 using RasData = CrystalDecisions.ReportAppServer.DataDefModel;
 
@@ -221,6 +222,95 @@ namespace Import.CrystalReports
 
                 default:
                     return SqlDbType.NVarChar;
+            }
+        }
+
+        /// <summary>
+        /// The order of a group and the period of a group on a date: the sort of the group gives the direction
+        /// (the original order of Crystal is no sorting), the date condition of the group turns the date into
+        /// the start of its period, so all the dates of a month, a week and so on make one group.
+        /// </summary>
+        private void ApplyGroupOptions(StiGroupHeaderBand band, ReportDocument report, int index)
+        {
+            if (index >= report.DataDefinition.Groups.Count)
+                return;
+
+            var group = report.DataDefinition.Groups[index];
+            band.SortDirection = GetGroupSortDirection(report, group);
+
+            var options = (GetRasObject(group, "RasGroup") as RasData.ISCRGroup)?.Options as RasData.DateGroupOptions;
+            var condition = band.Condition.Value;
+            if (options == null || condition == null || !condition.StartsWith("{") || !condition.EndsWith("}"))
+                return;
+
+            var date = condition.Substring(1, condition.Length - 2);
+            var period = GetDatePeriod(date, options.DateCondition);
+            if (period == null)
+            {
+                warningList.Add(StiWarning.GetWarningFormula(band.Name, $"The date group {options.DateCondition} " +
+                    "is not supported"));
+                return;
+            }
+
+            band.Condition.Value = "{" + period + "}";
+        }
+
+        private static StiGroupSortDirection GetGroupSortDirection(ReportDocument report,
+            CrystalDecisions.CrystalReports.Engine.Group group)
+        {
+            var field = group.ConditionField?.FormulaName;
+            foreach (SortField sort in report.DataDefinition.SortFields)
+            {
+                if (sort.SortType != SortFieldType.GroupSortField || sort.Field?.FormulaName != field)
+                    continue;
+
+                switch (sort.SortDirection)
+                {
+                    case SortDirection.DescendingOrder:
+                        return StiGroupSortDirection.Descending;
+
+                    case SortDirection.AscendingOrder:
+                        return StiGroupSortDirection.Ascending;
+
+                    default:
+                        return StiGroupSortDirection.None;
+                }
+            }
+
+            return StiGroupSortDirection.Ascending;
+        }
+
+        /// <summary>
+        /// The start of the period of a date: a week starts on Sunday as in Crystal, it is counted from the Sunday
+        /// of 7 January 1900 without the enumeration DayOfWeek, which the interpretation mode can't cast.
+        /// </summary>
+        private static string GetDatePeriod(string date, RasData.CrDateConditionEnum condition)
+        {
+            switch (condition)
+            {
+                case RasData.CrDateConditionEnum.crDateConditionDaily:
+                    return $"{date}.Date";
+
+                case RasData.CrDateConditionEnum.crDateConditionWeekly:
+                    return $"{date}.Date.AddDays(-(({date}.Date - DateSerial(1900, 1, 7)).Days % 7))";
+
+                case RasData.CrDateConditionEnum.crDateConditionMonthly:
+                    return $"DateSerial({date}.Year, {date}.Month, 1)";
+
+                case RasData.CrDateConditionEnum.crDateConditionQuarterly:
+                    return $"DateSerial({date}.Year, ({date}.Month - 1) / 3 * 3 + 1, 1)";
+
+                case RasData.CrDateConditionEnum.crDateConditionSemiannually:
+                    return $"DateSerial({date}.Year, ({date}.Month - 1) / 6 * 6 + 1, 1)";
+
+                case RasData.CrDateConditionEnum.crDateConditionAnnually:
+                    return $"DateSerial({date}.Year, 1, 1)";
+
+                case RasData.CrDateConditionEnum.crDateConditionHour:
+                    return $"{date}.Date.AddHours({date}.Hour)";
+
+                default:
+                    return null;
             }
         }
 

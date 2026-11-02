@@ -385,6 +385,7 @@ namespace Import.CrystalReports
 		public StiReport Convert(ReportDocument crystalReport, IStiTreeLog log, bool usePrimitives)
 		{
             this.usePrimitives = usePrimitives;
+            this.mainDocument = crystalReport;
             log.OpenLog("Report");
 
 			stimulReport = new StiReport();
@@ -1471,6 +1472,7 @@ namespace Import.CrystalReports
                                         }
                                     }
                                     groupHeaderBand.Condition.Value = field;
+                                    ApplyGroupOptions(groupHeaderBand, crystalReport, conditionIndex);
                                     if (de.Key != null)
                                         resolver.AddGroupBand((string)de.Key, band.Name);
                                     if (de.Value == null)
@@ -1730,6 +1732,10 @@ namespace Import.CrystalReports
                 case ReportObjectKind.SubreportObject:
                 {
                     return ImportSubreportObject(obj);
+                }
+                case ReportObjectKind.BlobFieldObject:
+                {
+                    return ImportBlobFieldObject(obj);
                 }
 				default:
 				{
@@ -2023,8 +2029,7 @@ namespace Import.CrystalReports
 			PictureObject obj = o as PictureObject;
 
             ConvertProperties(image, obj);
-
-            warningList.Add(StiWarning.GetWarningPicture(obj.Name));
+            ApplyPicture(image, obj);
 
 			//image = null;
 			return image;
