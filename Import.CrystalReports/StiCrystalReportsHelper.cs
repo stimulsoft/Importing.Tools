@@ -1958,12 +1958,20 @@ namespace Import.CrystalReports
                 if (operation == "Count")
                     return GetSummaryCountText("{}", field);
 
+                var groupCondition = GetSummaryNotNullCondition(operation, field);
+                if (groupCondition != null)
+                    return "{" + operation + "If({}," + ReplaceFieldsAndVariables(field) + ", " + groupCondition + ")}";
+
                 return "{" + operation + "({}," + ReplaceFieldsAndVariables(field) + ")}";
             }
             else
             {
                 if (operation == "Count")
                     return GetSummaryCountText(string.Empty, field);
+
+                var condition = GetSummaryNotNullCondition(operation, field);
+                if (condition != null)
+                    return "{" + operation + "If(" + ReplaceFieldsAndVariables(field) + ", " + condition + ")}";
 
                 return "{" + operation + "(" + ReplaceFieldsAndVariables(field) + ")}";
             }
@@ -1975,12 +1983,30 @@ namespace Import.CrystalReports
         /// </summary>
         private string GetSummaryCountText(string band, string field)
         {
-            var reference = resolver.GetReference(field);
-            if (reference == null || string.IsNullOrEmpty(reference.DataSourceName))
+            var condition = GetNotNullCondition(field);
+            if (condition == null)
                 return band.Length > 0 ? "{Count({},)}" : "{Count()}";
 
             var separator = band.Length > 0 ? ", " : string.Empty;
-            return $"{{CountIf({band}{separator}!IsNull({reference.DataSourceName}, \"{reference.ColumnName}\"))}}";
+            return $"{{CountIf({band}{separator}{condition})}}";
+        }
+
+        /// <summary>
+        /// Average, Minimum and Maximum of Crystal skip NULL; Stimulsoft takes NULL of a database field as 0, which
+        /// lowers the average and may become the minimum. Sum is not changed by the zeros.
+        /// </summary>
+        private string GetSummaryNotNullCondition(string operation, string field)
+        {
+            return operation == "Avg" || operation == "Min" || operation == "Max" ? GetNotNullCondition(field) : null;
+        }
+
+        private string GetNotNullCondition(string field)
+        {
+            var reference = resolver.GetReference(field);
+            if (reference == null || string.IsNullOrEmpty(reference.DataSourceName))
+                return null;
+
+            return $"!IsNull({reference.DataSourceName}, \"{reference.ColumnName}\")";
         }
         #endregion
 

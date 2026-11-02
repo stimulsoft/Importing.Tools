@@ -51,14 +51,14 @@ namespace Import.CrystalReports.Formulas
             bool isCondition = false)
         {
             var checkedFields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            CollectCheckedFields(node, checkedFields);
+            CollectCheckedFields(node, resolver, checkedFields);
 
             var fields = new List<StiCrystalReference>();
             CollectFields(node, resolver, fields, isCondition);
 
             return fields
-                .Where(f => f.Name == null || !checkedFields.Contains(f.Name))
-                .GroupBy(f => f.DataSourceName + "." + f.ColumnName, StringComparer.OrdinalIgnoreCase)
+                .Where(f => !checkedFields.Contains(GetKey(f)))
+                .GroupBy(GetKey, StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.First())
                 .ToList();
         }
@@ -133,20 +133,31 @@ namespace Import.CrystalReports.Formulas
             }
         }
 
-        private static void CollectCheckedFields(StiCrystalNode node, HashSet<string> checkedFields)
+        /// <summary>
+        /// The fields are compared by the data source and the column: the same field may be written differently.
+        /// </summary>
+        private static void CollectCheckedFields(StiCrystalNode node, IStiCrystalResolver resolver,
+            HashSet<string> checkedFields)
         {
             if (node.Kind == StiCrystalNodeKind.Call && IsNullSafeFunction(node.Text))
             {
                 foreach (var child in node.Children.Where(c => c.Kind == StiCrystalNodeKind.Reference))
                 {
-                    checkedFields.Add(child.Text);
+                    var reference = resolver.ResolveReference(child.Text);
+                    if (!string.IsNullOrEmpty(reference?.DataSourceName))
+                        checkedFields.Add(GetKey(reference));
                 }
             }
 
             foreach (var child in node.Children)
             {
-                CollectCheckedFields(child, checkedFields);
+                CollectCheckedFields(child, resolver, checkedFields);
             }
+        }
+
+        private static string GetKey(StiCrystalReference field)
+        {
+            return field.DataSourceName + "." + field.ColumnName;
         }
 
         /// <summary>
