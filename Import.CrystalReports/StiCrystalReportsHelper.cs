@@ -1514,8 +1514,7 @@ namespace Import.CrystalReports
                             child.Page = band.Page;
                             child.Top = band.Top;
 
-                            band = child;
-
+                            // The options of the section are taken from the band before the child replaces it
                             if ((band as IStiPageBreak) != null)
                             {
                                 child.NewPageBefore = (band as IStiPageBreak).NewPageBefore;
@@ -1523,39 +1522,13 @@ namespace Import.CrystalReports
                             }
                             if ((band as IStiPageBreak) != null) child.NewPageAfter = (band as IStiPageBreak).NewPageAfter;
                             if ((band as IStiPrintAtBottom) != null) child.PrintAtBottom = (band as IStiPrintAtBottom).PrintAtBottom;
+
+                            band = child;
                         }
                     }
 
-                    #region Suppress
                     //band.Enabled = !section.SectionFormat.EnableSuppress;
-
-                    bool hasSuppressExpression = false;
-                    object objCondition = GetPropertyFromHiddenObject(section.SectionFormat, "RasSectionFormat.ConditionFormulas");
-                    if (objCondition != null)
-                    {
-                        var formulaClass = objCondition as CrystalDecisions.ReportAppServer.ReportDefModel.SectionAreaFormatConditionFormulasClass;
-                        var conditionFormula = formulaClass[CrystalDecisions.ReportAppServer.ReportDefModel.CrSectionAreaFormatConditionFormulaTypeEnum.crSectionAreaConditionFormulaTypeEnableSuppress];
-                        if ((conditionFormula != null) && !string.IsNullOrWhiteSpace(conditionFormula.Text))
-                        {
-                            AddSuppressCondition(band, conditionFormula.Text, band.Name);
-                            hasSuppressExpression = true;
-                        }
-                    }
-
-                    if (section.SectionFormat.EnableSuppress && !hasSuppressExpression)
-                    {
-                        band.Brush = new StiHatchBrush(HatchStyle.BackwardDiagonal, Color.DarkGray, Color.White);
-                        band.Enabled = false;
-                    }
-
-                    if (!band.Enabled)
-                    {
-                        if (band is StiDataBand)
-                        {
-                            (band as StiDataBand).CalcInvisible = true;
-                        }
-                    }
-                    #endregion
+                    ApplySectionSuppress(band, section, GetArea(crystalReport, section));
 
 					page.Components.Add(band);
 

@@ -30,10 +30,12 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Linq;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
 using Import.CrystalReports.Formulas;
+using Stimulsoft.Base.Drawing;
 using Stimulsoft.Report;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Dictionary;
@@ -231,19 +233,85 @@ namespace Import.CrystalReports
         }
 
         /// <summary>
-        /// The formula of the suppression becomes a condition which disables the component when it is true.
+        /// The formula of the suppression becomes a condition which disables the component when it is true. The formula
+        /// of a section or of an object overrides its own checkbox Suppress, so the component is enabled; the formula
+        /// of an area doesn't override the checkbox of the section.
         /// </summary>
         private void AddSuppressCondition(StiComponent component, string text, string place,
-            StiCrystalReference currentFieldValue = null)
+            StiCrystalReference currentFieldValue = null, bool overridesSuppress = true)
         {
             if (string.IsNullOrWhiteSpace(text))
                 return;
 
-            pendingTranslations.Add(() => ApplySuppressCondition(component, text, place, currentFieldValue));
+            pendingTranslations.Add(() =>
+                ApplySuppressCondition(component, text, place, currentFieldValue, overridesSuppress));
+        }
+
+        /// <summary>
+        /// Crystal suppresses a section by the section itself and by its area: a band is hidden by the checkbox of
+        /// either of them, and it gets the conditions of the formulas of both. A formula overrides the checkbox of its
+        /// own level only.
+        /// </summary>
+        private void ApplySectionSuppress(StiBand band, Section section, Area area)
+        {
+            var sectionFormula = GetSuppressFormula(
+                GetPropertyFromHiddenObject(section.SectionFormat, "RasSectionFormat") as Ras.ISCRSectionFormat);
+            var areaFormula = area == null
+                ? null
+                : GetSuppressFormula(
+                    GetPropertyFromHiddenObject(area.AreaFormat, "RasAreaFormat") as Ras.ISCRAreaFormat);
+
+            var sectionSuppressed = section.SectionFormat.EnableSuppress && sectionFormula == null;
+            var areaSuppressed = area != null && area.AreaFormat.EnableSuppress && areaFormula == null;
+            if (sectionSuppressed || areaSuppressed)
+            {
+                band.Brush = new StiHatchBrush(HatchStyle.BackwardDiagonal, Color.DarkGray, Color.White);
+                band.Enabled = false;
+
+                var dataBand = band as StiDataBand;
+                if (dataBand != null)
+                    dataBand.CalcInvisible = true;
+
+                return;
+            }
+
+            AddSuppressCondition(band, sectionFormula, band.Name);
+            AddSuppressCondition(band, areaFormula, area?.Name, overridesSuppress: false);
+        }
+
+        private static Area GetArea(ReportDocument report, Section section)
+        {
+            foreach (Area area in report.ReportDefinition.Areas)
+            {
+                foreach (Section item in area.Sections)
+                {
+                    if (item.Name == section.Name)
+                        return area;
+                }
+            }
+
+            return null;
+        }
+
+        private static string GetSuppressFormula(Ras.ISCRSectionFormat format)
+        {
+            return GetSuppressFormula(format?.ConditionFormulas);
+        }
+
+        private static string GetSuppressFormula(Ras.ISCRAreaFormat format)
+        {
+            return GetSuppressFormula(format?.ConditionFormulas);
+        }
+
+        private static string GetSuppressFormula(Ras.SectionAreaFormatConditionFormulas formulas)
+        {
+            var text = formulas?[Ras.CrSectionAreaFormatConditionFormulaTypeEnum
+                .crSectionAreaConditionFormulaTypeEnableSuppress]?.Text;
+            return string.IsNullOrWhiteSpace(text) ? null : text;
         }
 
         private void ApplySuppressCondition(StiComponent component, string text, string place,
-            StiCrystalReference currentFieldValue)
+            StiCrystalReference currentFieldValue, bool overridesSuppress)
         {
             var expression = TranslateFormula(text, place, currentFieldValue);
             if (expression == null)
@@ -257,7 +325,9 @@ namespace Import.CrystalReports
 
             // When the formula is set, Crystal ignores the checkbox Suppress, but the engine still reports
             // the checkbox: the component is enabled and the condition decides
-            component.Enabled = true;
+            if (overridesSuppress)
+                component.Enabled = true;
+
             component.Conditions.Add(new StiCondition
             {
                 Item = StiFilterItem.Expression,
