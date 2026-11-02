@@ -105,14 +105,29 @@ namespace Import.CrystalReports
         /// </summary>
         private static bool GetNullsAsDefault(ReportDocument report, FormulaFieldDefinition formula)
         {
-            // Some reports don't give the options, then the formula keeps the default of Crystal
+            if (ConvertsNullsToDefault(report))
+                return true;
+
             try
             {
-                if (report.ReportOptions.ConvertNullFieldToDefault)
-                    return true;
-
                 var rasFormula = GetRasObject(formula, "RasFormulaField") as RasData.ISCRFormulaField;
                 return rasFormula?.FormulaNullTreatment == RasData.CrFormulaNullTreatmentEnum.crTreatNullAsDefaultValue;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// The option of the report which converts NULL of the fields to the default values. Some reports don't give
+        /// their options, then the report keeps the default of Crystal.
+        /// </summary>
+        private static bool ConvertsNullsToDefault(ReportDocument report)
+        {
+            try
+            {
+                return report != null && report.ReportOptions.ConvertNullFieldToDefault;
             }
             catch (Exception)
             {
@@ -231,6 +246,29 @@ namespace Import.CrystalReports
             finally
             {
                 resolver.CurrentFieldValue = null;
+            }
+        }
+
+        /// <summary>
+        /// Crystal drops a record when the record selection reads a NULL field, Stimulsoft converts NULL to 0 or to
+        /// the empty string and keeps the record, so the filter checks the fields before each part of the condition
+        /// which reads them. The formulas of the formatting and of the suppression take NULL as the default value in
+        /// Crystal, like Stimulsoft, they are not changed.
+        /// </summary>
+        private StiCrystalExpression ApplySelectionNullFields(string text, StiCrystalExpression expression)
+        {
+            if (expression == null || expression.Type != typeof(bool) || ConvertsNullsToDefault(mainDocument))
+                return expression;
+
+            // The parts of the condition are translated separately; a part which fails keeps the whole filter
+            try
+            {
+                var code = StiCrystalNullFields.GetSelectionCode(StiCrystalParser.Parse(text), resolver);
+                return code == null ? expression : new StiCrystalExpression(code, typeof(bool));
+            }
+            catch (StiCrystalFormulaException)
+            {
+                return expression;
             }
         }
 
@@ -380,7 +418,7 @@ namespace Import.CrystalReports
 
             pendingTranslations.Add(() =>
             {
-                var expression = TranslateFormula(text, "Record Selection");
+                var expression = ApplySelectionNullFields(text, TranslateFormula(text, "Record Selection"));
                 if (expression == null || expression.Type != typeof(bool))
                     return;
 

@@ -111,7 +111,7 @@ namespace Import.CrystalReports
             if (obj.DataSource.Kind != FieldKind.DatabaseField || obj.DataSource.ValueType == FieldValueType.StringField)
                 return;
 
-            if (mainDocument?.ReportOptions.ConvertNullFieldToDefault == true)
+            if (ConvertsNullsToDefault(mainDocument))
                 return;
 
             var value = text.Text?.Value;
