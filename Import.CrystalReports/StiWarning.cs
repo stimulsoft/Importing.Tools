@@ -81,6 +81,22 @@ namespace Import.CrystalReports
                 "A format of Stimulsoft Reports has the fixed settings, so the value of the formula is not used and" +
                 " the static setting of the field is kept. Please correct the format manually if it is needed.");
         }
+
+        public static StiWarning GetWarningCrossTab(string objectName)
+        {
+            return new StiWarning(
+                string.Format("Cross-tab '{0}': Added empty", objectName),
+                "The runtime of Crystal Reports gives only the position and the frame of a cross-tab, not its rows," +
+                " columns and summaries, so an empty cross-tab marks its place. Please fill it manually.");
+        }
+
+        public static StiWarning GetWarningObject(string objectName, string kind)
+        {
+            return new StiWarning(
+                string.Format("Object '{0}': {1} is not imported", objectName, kind),
+                "The runtime of Crystal Reports gives only the position and the frame of such an object, not its" +
+                " content, so it is skipped. Please add a similar component to the report manually.");
+        }
         #endregion
 
         #region this

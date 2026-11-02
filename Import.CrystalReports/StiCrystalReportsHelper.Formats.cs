@@ -65,7 +65,7 @@ namespace Import.CrystalReports
             if (format == null)
                 return;
 
-            WarnFormatFormulas(obj.Name, format.NumericFormat?.ConditionFormulas);
+            ApplyFormatFormulas(text, obj.Name, format.NumericFormat);
 
             var isDefault = format.CommonFormat == null || format.CommonFormat.EnableSystemDefault;
             switch (field.FieldValueType)
@@ -123,13 +123,22 @@ namespace Import.CrystalReports
         }
 
         /// <summary>
-        /// Crystal may calculate the settings of a number format by formulas, for example the number of decimals
-        /// from the data; a format of Stimulsoft is fixed, so such a field only gets a warning.
+        /// Crystal may calculate the settings of a number format by formulas. The number of decimals from a formula,
+        /// for example from the data, is applied by the text itself; a format of Stimulsoft is fixed, so the other
+        /// formulas only give a warning.
         /// </summary>
-        private void WarnFormatFormulas(string objectName, Ras.NumericFieldFormatConditionFormulas formulas)
+        private void ApplyFormatFormulas(StiText text, string objectName, Ras.NumericFieldFormat number)
         {
+            var formulas = number?.ConditionFormulas;
             if (formulas == null)
                 return;
+
+            var decimals = formulas[Ras.CrNumericFieldFormatConditionFormulaTypeEnum
+                .crNumericFieldFormatConditionFormulaTypeNDecimalPlaces]?.Text?.Trim();
+            var hasSymbol = number.CurrencySymbolFormat != Ras.CrCurrencySymbolTypeEnum.crCurrencySymbolTypeNoSymbol;
+            var appliesDecimals = !string.IsNullOrEmpty(decimals) && !hasSymbol;
+            if (appliesDecimals)
+                AddDecimalPlacesFormula(text, objectName, decimals, number.ThousandsSeparator);
 
             foreach (Ras.CrNumericFieldFormatConditionFormulaTypeEnum kind in
                 Enum.GetValues(typeof(Ras.CrNumericFieldFormatConditionFormulaTypeEnum)))
@@ -138,9 +147,49 @@ namespace Import.CrystalReports
                 if (formula == null || string.IsNullOrWhiteSpace(formula.Text))
                     continue;
 
+                // The rounding to the same number of decimals is made by the format of the number
                 var property = kind.ToString().Replace("crNumericFieldFormatConditionFormulaType", string.Empty);
+                if (appliesDecimals && (property == "NDecimalPlaces" ||
+                    property == "RoundingFormat" && formula.Text.Trim() == decimals))
+                    continue;
+
                 warningList.Add(StiWarning.GetWarningFormat(objectName, property, formula.Text));
             }
+        }
+
+        /// <summary>
+        /// The text formats the number by the .NET format N or F with the number of decimals from the formula, so
+        /// the format of the component is general; the separators are the local ones like the system default.
+        /// </summary>
+        private void AddDecimalPlacesFormula(StiText text, string objectName, string formula, bool useSeparators)
+        {
+            pendingTranslations.Add(() =>
+            {
+                var value = text.Text?.Value;
+                if (string.IsNullOrEmpty(value) || !value.StartsWith("{") || !value.EndsWith("}") ||
+                    value.LastIndexOf('{') != 0)
+                {
+                    warningList.Add(StiWarning.GetWarningFormat(objectName, "NDecimalPlaces", formula));
+                    return;
+                }
+
+                var digits = TranslateFormula(formula, objectName + ".NDecimalPlaces");
+                if (digits == null)
+                    return;
+
+                if (digits.Type == typeof(string) || digits.Type == typeof(bool) || digits.Type == typeof(DateTime))
+                {
+                    warningList.Add(StiWarning.GetWarningFormat(objectName, "NDecimalPlaces", formula));
+                    return;
+                }
+
+                var pattern = useSeparators ? "N" : "F";
+                var number = value.Substring(1, value.Length - 2);
+                text.Text = $"{{Format(\"{{0:{pattern}\" + (int){digits.ToOperand()} + \"}}\", {number})}}";
+                text.TextFormat = new StiGeneralFormatService();
+                text.Type = StiSystemTextType.None;
+                text.NullValue = string.Empty;
+            });
         }
 
         private static void ApplyNumberFormat(StiText text, Ras.NumericFieldFormat number, bool isDefault,

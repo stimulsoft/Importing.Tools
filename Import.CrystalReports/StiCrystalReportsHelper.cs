@@ -40,6 +40,7 @@ using System.Text;
 using Stimulsoft.Report;
 using Stimulsoft.Report.Dictionary;
 using Stimulsoft.Report.Components;
+using Stimulsoft.Report.CrossTab;
 using Stimulsoft.Base;
 using Stimulsoft.Base.Drawing;
 using CrystalDecisions.CrystalReports.Engine;
@@ -1713,8 +1714,14 @@ namespace Import.CrystalReports
                 {
                     return ImportBlobFieldObject(obj);
                 }
+                case ReportObjectKind.CrossTabObject:
+                {
+                    return ImportCrossTabObject(obj);
+                }
 				default:
 				{
+                    // Charts, maps and OLAP grids: their content is not available
+                    warningList.Add(StiWarning.GetWarningObject(obj.Name, obj.Kind.ToString()));
 					return null;
 				}						
 			}
@@ -2011,6 +2018,19 @@ namespace Import.CrystalReports
         #endregion
 
         #region Import objects
+        /// <summary>
+        /// The runtime doesn't give the rows, the columns and the summaries of a cross-tab, so an empty cross-tab
+        /// keeps its place and shows that the report has content there.
+        /// </summary>
+        private StiComponent ImportCrossTabObject(ReportObject obj)
+        {
+            warningList.Add(StiWarning.GetWarningCrossTab(obj.Name));
+
+            var crossTab = new StiCrossTab();
+            ConvertProperties(crossTab, obj);
+            return crossTab;
+        }
+
         private StiComponent ImportSubreportObject(ReportObject o)
         {
             StiSubReport subReport = new StiSubReport();
