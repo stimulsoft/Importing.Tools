@@ -2247,6 +2247,8 @@ namespace Import.CrystalReports
                     return typeof(double);
 
                 case FieldValueType.StringField:
+                case FieldValueType.PersistentMemoField:
+                case FieldValueType.TransientMemoField:
                     return typeof(string);
 
                 case FieldValueType.BitmapField:

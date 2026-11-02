@@ -695,6 +695,10 @@ namespace Import.CrystalReports.Formulas
         /// </summary>
         private StiCrystalExpression TranslateIndex(StiCrystalNode node)
         {
+            var split = TranslateFirstSplitItem(node);
+            if (split != null)
+                return split;
+
             var target = TranslateNode(node.Children[0]);
             var subscript = TranslateNode(node.Children[1]);
             if (target.Type != typeof(string))
@@ -713,6 +717,31 @@ namespace Import.CrystalReports.Formulas
             var to = Coerce(subscript.To, typeof(int)).ToOperand();
             return new StiCrystalExpression($"Mid({target.Code}, {from} - 1, {to} - {from} + 1)", typeof(string),
                 isAtomic: true);
+        }
+
+        /// <summary>
+        /// Split(text, delimiter)[1], the text before the first delimiter. The interpretation has no arrays of
+        /// strings, so only the first item is taken, by the position of the delimiter.
+        /// </summary>
+        private StiCrystalExpression TranslateFirstSplitItem(StiCrystalNode node)
+        {
+            var call = node.Children[0];
+            var subscript = node.Children[1];
+            if (call.Kind != StiCrystalNodeKind.Call || !string.Equals(call.Text, "split",
+                StringComparison.OrdinalIgnoreCase) || call.Children.Count != 2)
+                return null;
+
+            if (subscript.Kind != StiCrystalNodeKind.Number || subscript.Text != "1")
+                return null;
+
+            var text = TranslateNode(call.Children[0]);
+            var delimiter = TranslateNode(call.Children[1]);
+            if (text.Type != typeof(string) || string.IsNullOrEmpty(delimiter.Literal))
+                return null;
+
+            var position = $"{text.ToOperand()}.IndexOf({delimiter.Code})";
+            var code = $"({position} < 0 ? {text.Code} : Left({text.Code}, {position}))";
+            return new StiCrystalExpression(code, typeof(string), isAtomic: true);
         }
 
         /// <summary>
