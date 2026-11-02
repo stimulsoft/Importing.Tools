@@ -30,6 +30,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
 using Import.CrystalReports.Formulas;
@@ -61,11 +62,19 @@ namespace Import.CrystalReports
         private Dictionary<string, StiCrystalFormulaField> formulaFields;
         private List<Action> pendingTranslations;
         private Dictionary<string, StiCrystalReference> globalVariables;
+        private StiPage formulaPage;
         #endregion
 
         #region Methods.Formulas
-        private void InitFormulas()
+        /// <summary>
+        /// Starts the formulas of a page: the main report and every subreport have their own fields and formulas.
+        /// </summary>
+        private void InitFormulas(StiPage page)
         {
+            formulaPage = page;
+            runningTotals = null;
+            runningTotalExpressions = null;
+            runningTotalVariables = null;
             resolver = new StiCrystalReportResolver();
             resolver.ReferenceResolving += Resolver_ReferenceResolving;
             resolver.VariableResolving = GetGlobalVariable;
@@ -88,6 +97,8 @@ namespace Import.CrystalReports
         /// </summary>
         private void ApplyPendingTranslations()
         {
+            TranslateRunningTotals();
+
             foreach (var formula in formulaFields.Values)
             {
                 TranslateFormulaField(formula);
@@ -122,10 +133,22 @@ namespace Import.CrystalReports
                 if (expression == null)
                     throw new StiCrystalFormulaException("The formula is empty");
 
-                variable.InitBy = StiVariableInitBy.Expression;
-                variable.Value = expression.Code;
-                variable.Type = expression.Type;
                 reference.Type = expression.Type;
+
+                // A running function is calculated only in a text, so the variable keeps the text of the formula
+                if (IsRunningExpression(expression.Code))
+                {
+                    variable.InitBy = StiVariableInitBy.Value;
+                    variable.Type = typeof(string);
+                    variable.Value = formula.Text.Replace("\r", "").Replace("\n", " ");
+                }
+
+                else
+                {
+                    variable.InitBy = StiVariableInitBy.Expression;
+                    variable.Value = expression.Code;
+                    variable.Type = expression.Type;
+                }
 
                 if (translator.HasSummaries)
                 {
@@ -159,10 +182,15 @@ namespace Import.CrystalReports
             if (string.IsNullOrWhiteSpace(text))
                 return null;
 
-            resolver.CurrentFieldValue = currentFieldValue;
+            resolver.CurrentFieldValue = GetInlineFieldValue(currentFieldValue);
             try
             {
-                return new StiCrystalTranslator(resolver).Translate(text);
+                var expression = new StiCrystalTranslator(resolver).Translate(text);
+
+                if (expression != null)
+                    CheckNotRunning(expression);
+
+                return expression;
             }
             catch (StiCrystalFormulaException e)
             {
@@ -173,6 +201,33 @@ namespace Import.CrystalReports
             {
                 resolver.CurrentFieldValue = null;
             }
+        }
+
+        /// <summary>
+        /// A running function works only in a text: a condition or a filter with it would not be calculated.
+        /// </summary>
+        private static void CheckNotRunning(StiCrystalExpression expression)
+        {
+            if (IsRunningExpression(expression.Code))
+                throw new StiCrystalFormulaException("A running total can be used only in the text of a field");
+        }
+
+        /// <summary>
+        /// The value of a field object with a formula which has summaries is the expression of the formula: the
+        /// variable of such a formula doesn't keep its value.
+        /// </summary>
+        private StiCrystalReference GetInlineFieldValue(StiCrystalReference currentFieldValue)
+        {
+            if (currentFieldValue == null)
+                return null;
+
+            var formula = formulaFields.Values.FirstOrDefault(f => f.Variable.Name == currentFieldValue.Expression);
+            if (formula?.InlineExpression == null)
+                return currentFieldValue;
+
+            var reference = resolver.GetReference(formula.Name);
+            var type = reference?.Type ?? currentFieldValue.Type;
+            return new StiCrystalReference("(" + formula.InlineExpression + ")", type);
         }
 
         /// <summary>
@@ -419,7 +474,7 @@ namespace Import.CrystalReports
             StiCrystalReference currentFieldValue)
         {
             var place = $"{text.Name}.{kind}";
-            resolver.CurrentFieldValue = currentFieldValue;
+            resolver.CurrentFieldValue = GetInlineFieldValue(currentFieldValue);
             try
             {
                 var node = StiCrystalParser.Parse(formula);
@@ -429,6 +484,8 @@ namespace Import.CrystalReports
                     var expression = translator.Translate(node);
                     if (expression == null || expression.Type != typeof(bool))
                         throw new StiCrystalFormulaException("The formula is not boolean");
+
+                    CheckNotRunning(expression);
 
                     var style = kind == FormatUnderline ? FontStyle.Underline : FontStyle.Strikeout;
                     text.Conditions.Add(new StiCondition
@@ -460,6 +517,7 @@ namespace Import.CrystalReports
                     if (expression == null || expression.Code == "false")
                         continue;
 
+                    CheckNotRunning(expression);
                     condition.Item = StiFilterItem.Expression;
                     condition.Expression = expression.Code;
                     text.Conditions.Add(condition);

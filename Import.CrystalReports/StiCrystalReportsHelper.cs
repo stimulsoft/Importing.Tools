@@ -477,7 +477,7 @@ namespace Import.CrystalReports
         #region Adds
         private void AddPage(StiPage page, ReportDocument crystalReport, bool isSubReport, IStiTreeLog log)
         {
-            InitFormulas();
+            InitFormulas(page);
 
             #region Page Parameters
             page.TitleBeforeHeader = true;
@@ -1223,6 +1223,8 @@ namespace Import.CrystalReports
 
                     if (flag)
                         resolver.AddReference(formulaName, new StiCrystalReference(variable.Name, variable.Type));
+
+                    AddRunningTotal(formulaName, formula, variable.Name);
 
                     //htVariableConversion.Add(formulaName, ReplaceSymbols(formulaName));
                     htVariableConversion[formulaName] = formulaNameNormalized;
@@ -2044,6 +2046,7 @@ namespace Import.CrystalReports
             text.Border = ConvertBorder(obj.Border);
             //text.Text = ReplaceFieldsAndVariables(obj.Text.Replace("\n", ""));
             text.Text = ReplaceFieldsAndVariables(obj.Text);
+            AddEmbeddedFieldsText(text);
             text.Font = obj.Font;
 
             ConvertProperties(text, obj);
@@ -2107,6 +2110,9 @@ namespace Import.CrystalReports
 
                 if (obj.DataSource.Kind == FieldKind.FormulaField)
                     AddFormulaFieldText(text, obj.DataSource.FormulaName.Trim('{', '}'));
+
+                if (obj.DataSource.Kind == FieldKind.RunningTotalField)
+                    AddRunningTotalText(text, obj.DataSource.FormulaName.Trim('{', '}'));
 
                 component = text;
             }

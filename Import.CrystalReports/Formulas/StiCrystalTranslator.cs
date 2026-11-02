@@ -464,6 +464,10 @@ namespace Import.CrystalReports.Formulas
         private StiCrystalExpression TranslateBinary(StiCrystalNode node)
         {
             var op = node.Text;
+            var equality = TranslateStrCmpEquality(node);
+            if (equality != null)
+                return equality;
+
             var left = TranslateNode(node.Children[0]);
             var right = TranslateNode(node.Children[1]);
 
@@ -525,6 +529,31 @@ namespace Import.CrystalReports.Formulas
             }
 
             throw new StiCrystalFormulaException($"The operator {op} is not supported", node.Position);
+        }
+
+        /// <summary>
+        /// StrCmp(a, b) = 0 and StrCmp(a, b) <> 0 are the equality of the strings: the interpretation can't
+        /// compare the order of the strings, but it can check that they are equal.
+        /// </summary>
+        private StiCrystalExpression TranslateStrCmpEquality(StiCrystalNode node)
+        {
+            if (node.Text != "=" && node.Text != "<>")
+                return null;
+
+            var call = node.Children[0];
+            var zero = node.Children[1];
+            var isStrCmp = call.Kind == StiCrystalNodeKind.Call && call.Children.Count == 2 &&
+                string.Equals(call.Text, "StrCmp", StringComparison.OrdinalIgnoreCase);
+            if (!isStrCmp || zero.Kind != StiCrystalNodeKind.Number || zero.Text != "0")
+                return null;
+
+            var first = TranslateNode(call.Children[0]);
+            var second = TranslateNode(call.Children[1]);
+            if (first.Type != typeof(string) || second.Type != typeof(string))
+                return null;
+
+            var op = node.Text == "=" ? "==" : "!=";
+            return new StiCrystalExpression($"{first.ToOperand()} {op} {second.ToOperand()}", typeof(bool));
         }
 
         private static StiCrystalExpression TranslateLogical(string op, StiCrystalExpression left,

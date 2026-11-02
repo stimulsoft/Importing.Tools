@@ -87,8 +87,12 @@ namespace Import.CrystalReports.Formulas
 
                     break;
 
+                // The interpretation has the function Trim, not the method
                 case "trim":
-                    return Method(args, "Trim()", typeof(string));
+                    if (args.Count == 1)
+                        return Call("Trim", typeof(string), args[0]);
+
+                    break;
 
                 case "trimleft":
                 case "ltrim":
@@ -133,6 +137,9 @@ namespace Import.CrystalReports.Formulas
                             typeof(int));
 
                     break;
+
+                case "strcmp":
+                    return TranslateStrCmp(args);
 
                 case "replace":
                     if (args.Count == 3)
@@ -260,6 +267,35 @@ namespace Import.CrystalReports.Formulas
 
             var length = args.Count == 3 ? Coerce(args[2], typeof(int)).Code : "int.MaxValue";
             return new StiCrystalExpression($"Mid({args[0].Code}, {start}, {length})", typeof(string), isAtomic: true);
+        }
+
+        /// <summary>
+        /// StrCmp returns -1, 0 or 1; it is case sensitive unless the third argument is 1.
+        /// </summary>
+        private static StiCrystalExpression TranslateStrCmp(List<StiCrystalExpression> args)
+        {
+            if (args.Count < 2 || args.Count > 3 || args[0].Type != typeof(string) || args[1].Type != typeof(string))
+                return null;
+
+            var first = args[0].Code;
+            var second = args[1].Code;
+            if (args.Count == 3)
+            {
+                if (args[2].Code == "1")
+                {
+                    first = $"{args[0].ToOperand()}.ToUpper()";
+                    second = $"{args[1].ToOperand()}.ToUpper()";
+                }
+
+                else if (args[2].Code != "0")
+                {
+                    return null;
+                }
+            }
+
+            var code = $"({first} == {second} ? 0 : " +
+                $"(string.Compare({first}, {second}, StringComparison.Ordinal) < 0 ? -1 : 1))";
+            return new StiCrystalExpression(code, typeof(int), isAtomic: true);
         }
 
         private static StiCrystalExpression TranslateChr(List<StiCrystalExpression> args)
