@@ -30,6 +30,7 @@
 using System;
 using System.Text;
 using CrystalDecisions.CrystalReports.Engine;
+using CrystalDecisions.Shared;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Components.TextFormats;
 using Ras = CrystalDecisions.ReportAppServer.ReportDefModel;
@@ -97,6 +98,28 @@ namespace Import.CrystalReports
                     ApplyBooleanFormat(text, format.BooleanFormat);
                     break;
             }
+        }
+
+        /// <summary>
+        /// Crystal prints nothing for a NULL value of a database field, Stimulsoft converts it to 0 or to the empty
+        /// date. NullValue of a text of a data column shows instead of NULL in both calculation modes; it must not be
+        /// empty, so it is a space. A string is empty anyway, and a report which converts NULL to the default value
+        /// prints 0 like Stimulsoft.
+        /// </summary>
+        private void ApplyNullValue(StiText text, FieldObject obj)
+        {
+            if (obj.DataSource.Kind != FieldKind.DatabaseField || obj.DataSource.ValueType == FieldValueType.StringField)
+                return;
+
+            if (mainDocument?.ReportOptions.ConvertNullFieldToDefault == true)
+                return;
+
+            var value = text.Text?.Value;
+            if (string.IsNullOrEmpty(value) || !value.StartsWith("{") || !value.EndsWith("}"))
+                return;
+
+            text.Type = StiSystemTextType.DataColumn;
+            text.NullValue = " ";
         }
 
         /// <summary>

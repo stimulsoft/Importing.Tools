@@ -1955,17 +1955,31 @@ namespace Import.CrystalReports
                 dicEntry.Value = groupField;
                 summaryFieldsList.Add(dicEntry);
                 if (operation == "Count")
-                    return "{Count({},)}";
+                    return GetSummaryCountText("{}", field);
 
                 return "{" + operation + "({}," + ReplaceFieldsAndVariables(field) + ")}";
             }
             else
             {
                 if (operation == "Count")
-                    return "{Count()}";
+                    return GetSummaryCountText(string.Empty, field);
 
                 return "{" + operation + "(" + ReplaceFieldsAndVariables(field) + ")}";
             }
+        }
+
+        /// <summary>
+        /// Count of a database field skips its NULL values like Crystal. The band of a group is "{}" here, it is put
+        /// instead of "{}," after the import of the bands.
+        /// </summary>
+        private string GetSummaryCountText(string band, string field)
+        {
+            var reference = resolver.GetReference(field);
+            if (reference == null || string.IsNullOrEmpty(reference.DataSourceName))
+                return band.Length > 0 ? "{Count({},)}" : "{Count()}";
+
+            var separator = band.Length > 0 ? ", " : string.Empty;
+            return $"{{CountIf({band}{separator}!IsNull({reference.DataSourceName}, \"{reference.ColumnName}\"))}}";
         }
         #endregion
 
@@ -2080,6 +2094,7 @@ namespace Import.CrystalReports
 
                 text.Text = TypeField(obj, text);
                 ApplyFieldFormat(text, obj);
+                ApplyNullValue(text, obj);
 
                 if (obj.DataSource.Kind == FieldKind.FormulaField)
                     AddFormulaFieldText(text, obj.DataSource.FormulaName.Trim('{', '}'));

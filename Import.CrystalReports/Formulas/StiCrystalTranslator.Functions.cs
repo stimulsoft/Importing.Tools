@@ -774,7 +774,8 @@ namespace Import.CrystalReports.Formulas
 
             HasSummaries = true;
 
-            // Count of Stimulsoft counts the rows, it takes only the band
+            // Count of Stimulsoft counts the rows, it takes only the band. CountIf would skip NULL like Crystal, but
+            // the compilation doesn't calculate it in the conditions of the formatting
             if (function == "Count")
                 return new StiCrystalExpression($"Count({band})", type, isAtomic: true);
 
