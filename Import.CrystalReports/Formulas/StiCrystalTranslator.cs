@@ -41,12 +41,17 @@ namespace Import.CrystalReports.Formulas
     /// the ternary operator, the casts, the members of the base types and the functions of the dictionary.
     /// A formula of several statements is translated if the statements only declare and assign local variables:
     /// the values of the variables are substituted into the last expression. A global or shared variable becomes
-    /// a variable of the dictionary; its assignment is the value of the whole formula, Variable = value, because
-    /// the parser of the interpretation mode accepts an assignment only as the whole expression.
+    /// a variable of the dictionary, its assignment is (Variable = value). Both modes accept an assignment in
+    /// parentheses inside an expression and evaluate only the chosen branch of the ternary operator, so the
+    /// statements with assignments before the value of the formula become (T)Choose(n, statement, ..., value):
+    /// Choose evaluates its arguments in order and returns the last one. The parser of the interpretation mode
+    /// evaluates both operands of &amp;&amp; and ||, so an assignment after and or or is not translated.
     /// </summary>
     public partial class StiCrystalTranslator
     {
         #region Consts
+        private const int MaxChooseValues = 25;
+
         /// <summary>
         /// The words which set the time of evaluation of a formula; Stimulsoft has no such notion, they are skipped.
         /// </summary>
@@ -59,6 +64,12 @@ namespace Import.CrystalReports.Formulas
         #region Fields
         private readonly IStiCrystalResolver resolver;
         private Dictionary<string, StiCrystalExpression> variables;
+
+        /// <summary>
+        /// The number of the assignments of global variables translated so far: a part of a formula contains an
+        /// assignment when the number grows while it is translated.
+        /// </summary>
+        private int assignmentCount;
         #endregion
 
         #region Properties
@@ -129,31 +140,64 @@ namespace Import.CrystalReports.Formulas
         }
 
         /// <summary>
-        /// Translates the statements in order and returns the value of the last one. An assignment of a global
-        /// variable may be followed only by the reading of the same variable, which gives the same value.
+        /// Translates the statements in order and returns the value of the last one. The statements before it
+        /// which assign global variables are evaluated first by Choose; the other statements have no effect, the
+        /// values of the local variables are substituted. An assignment followed by the reading of the same
+        /// variable is the assignment itself, it gives the same value.
         /// </summary>
         private StiCrystalExpression TranslateSequence(StiCrystalNode node)
         {
+            var effects = new List<StiCrystalExpression>();
             StiCrystalExpression result = null;
+            var resultHasAssignment = false;
             foreach (var statement in node.Children)
             {
+                var count = assignmentCount;
                 var value = TranslateStatement(statement);
                 if (value == null)
                     continue;
 
-                if (result != null && result.IsAssignment)
-                {
-                    if (value.Code != result.AssignedVariable)
-                        throw new StiCrystalFormulaException("An assignment of a global variable must be the value " +
-                            "of the formula", statement.Position);
-
-                    continue;
-                }
+                if (resultHasAssignment)
+                    effects.Add(result);
 
                 result = value;
+                resultHasAssignment = assignmentCount > count;
             }
 
-            return result;
+            if (result == null || effects.Count == 0)
+                return result;
+
+            var lastEffect = effects[effects.Count - 1];
+            if (!resultHasAssignment && lastEffect.IsAssignment && result.Code == lastEffect.AssignedVariable)
+            {
+                effects.RemoveAt(effects.Count - 1);
+                result = lastEffect;
+                if (effects.Count == 0)
+                    return result;
+            }
+
+            if (result.IsArray || result.IsRange)
+                throw new StiCrystalFormulaException("The value of the formula is an array or a range", node.Position);
+
+            var code = CreateChoose(effects.Concat(new[] { result }).Select(e => e.ToOperand()).ToList());
+            if (result.Type != typeof(object))
+                code = $"({GetTypeName(result.Type)}){code}";
+
+            return new StiCrystalExpression(code, result.Type);
+        }
+
+        /// <summary>
+        /// Choose of the values which returns the last one. The parser of the interpretation mode knows Choose of up
+        /// to 25 values, so the rest goes into a nested Choose, the last value of the outer one.
+        /// </summary>
+        private static string CreateChoose(List<string> values)
+        {
+            if (values.Count <= MaxChooseValues)
+                return $"Choose({values.Count}, {string.Join(", ", values)})";
+
+            var head = values.Take(MaxChooseValues - 1);
+            var rest = CreateChoose(values.Skip(MaxChooseValues - 1).ToList());
+            return $"Choose({MaxChooseValues}, {string.Join(", ", head)}, {rest})";
         }
 
         /// <summary>
@@ -244,10 +288,11 @@ namespace Import.CrystalReports.Formulas
             return value;
         }
 
-        private static StiCrystalExpression CreateAssignment(StiCrystalExpression variable, StiCrystalExpression value,
+        private StiCrystalExpression CreateAssignment(StiCrystalExpression variable, StiCrystalExpression value,
             StiCrystalNode node)
         {
             RequireNoAssignment(value, node);
+            assignmentCount++;
 
             var converted = Coerce(value, variable.Type);
             if (converted.Type != variable.Type && !(IsNumber(variable.Type) && IsNumber(converted.Type)))
@@ -266,8 +311,8 @@ namespace Import.CrystalReports.Formulas
         }
 
         /// <summary>
-        /// An assignment of a global variable can't be a part of an expression: the parser of the interpretation
-        /// mode accepts it only as the whole expression.
+        /// An assignment can't be the value of a local variable, which is substituted into the expressions and would
+        /// assign once for each use, or the value of another assignment.
         /// </summary>
         private static void RequireNoAssignment(StiCrystalExpression value, StiCrystalNode node)
         {
@@ -347,8 +392,7 @@ namespace Import.CrystalReports.Formulas
                     if (value == null)
                         throw new StiCrystalFormulaException("The statement has no value", node.Position);
 
-                    RequireNoAssignment(value, node);
-                    return value;
+                    return Parenthesize(value);
             }
 
             throw new StiCrystalFormulaException($"{node.Kind} is not supported", node.Position);
@@ -469,6 +513,7 @@ namespace Import.CrystalReports.Formulas
                 return equality;
 
             var left = TranslateNode(node.Children[0]);
+            var count = assignmentCount;
             var right = TranslateNode(node.Children[1]);
 
             switch (op)
@@ -478,6 +523,11 @@ namespace Import.CrystalReports.Formulas
                 case "xor":
                 case "eqv":
                 case "imp":
+                    // The compilation skips the right operand of && and ||, the interpretation evaluates it
+                    if (assignmentCount > count)
+                        throw new StiCrystalFormulaException("An assignment of a global variable after " +
+                            $"{op} is not supported", node.Position);
+
                     return TranslateLogical(op, left, right, node);
 
                 case "=":
@@ -830,6 +880,7 @@ namespace Import.CrystalReports.Formulas
             var condition = TranslateNode(node.Children[0]);
             RequireBoolean(condition, node);
 
+            var count = assignmentCount;
             var thenValue = TranslateStatement(node.Children[1]);
             var elseValue = node.Children.Count > 2 ? TranslateStatement(node.Children[2]) : null;
             if (thenValue == null)
@@ -838,19 +889,26 @@ namespace Import.CrystalReports.Formulas
             if (elseValue == null)
                 elseValue = GetDefaultValue(thenValue.Type);
 
-            return CreateConditional(condition, thenValue, elseValue, node);
+            return CreateConditional(condition, thenValue, elseValue, node, assignmentCount > count);
         }
 
+        /// <summary>
+        /// The ternary operator; the branches may assign global variables, both modes evaluate only one of them.
+        /// </summary>
         private StiCrystalExpression CreateConditional(StiCrystalExpression condition, StiCrystalExpression thenValue,
-            StiCrystalExpression elseValue, StiCrystalNode node)
+            StiCrystalExpression elseValue, StiCrystalNode node, bool hasAssignments = false)
         {
-            RequireNoAssignment(thenValue, node);
-            RequireNoAssignment(elseValue, node);
-
             var type = GetCommonType(thenValue, elseValue, node);
 
             // The parser of the interpretation mode gives the ternary operator the type object, which the logical
-            // operators don't accept, so a boolean choice is written with the logical operators only
+            // operators don't accept, so a boolean choice is written with the logical operators only; with the
+            // assignments in the branches they would assign in both, so the ternary operator is cast
+            if (type == typeof(bool) && hasAssignments)
+            {
+                return new StiCrystalExpression($"(bool)({condition.ToOperand()} ? {thenValue.ToOperand()} : " +
+                    $"{elseValue.ToOperand()})", type);
+            }
+
             if (type == typeof(bool))
                 return CreateLogicalChoice(condition, thenValue, elseValue);
 
@@ -902,6 +960,7 @@ namespace Import.CrystalReports.Formulas
             var subject = TranslateNode(node.Children[0]);
             var cases = node.Children.Skip(1).ToList();
 
+            var count = assignmentCount;
             StiCrystalExpression result = null;
             var defaultCase = cases.FirstOrDefault(c => c.Text == "default");
             if (defaultCase != null)
@@ -921,7 +980,8 @@ namespace Import.CrystalReports.Formulas
             {
                 var values = branch.Children.Take(branch.Children.Count - 1).Select(TranslateNode).ToList();
                 var condition = TranslateIn(subject, StiCrystalExpression.CreateArray(values), node);
-                result = CreateConditional(condition, TranslateStatement(branch.Children.Last()), result, node);
+                var value = TranslateStatement(branch.Children.Last());
+                result = CreateConditional(condition, value, result, node, assignmentCount > count);
             }
 
             return result;

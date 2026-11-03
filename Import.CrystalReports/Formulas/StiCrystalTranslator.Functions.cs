@@ -85,6 +85,7 @@ namespace Import.CrystalReports.Formulas
                 throw new StiCrystalFormulaException("Switch needs pairs of a condition and a value", position);
 
             var node = new StiCrystalNode(StiCrystalNodeKind.If, null, position, argumentNodes.ToArray());
+            var count = assignmentCount;
             var conditions = new List<StiCrystalExpression>();
             var values = new List<StiCrystalExpression>();
             for (var index = 0; index < argumentNodes.Count; index += 2)
@@ -103,7 +104,7 @@ namespace Import.CrystalReports.Formulas
                     result = values[index];
 
                 else
-                    result = CreateConditional(conditions[index], values[index], result, node);
+                    result = CreateConditional(conditions[index], values[index], result, node, assignmentCount > count);
             }
 
             return result;
@@ -173,6 +174,26 @@ namespace Import.CrystalReports.Formulas
                     if (args.Count == 2)
                         return new StiCrystalExpression($"{args[0].ToOperand()}.IndexOf({args[1].Code}) + 1",
                             typeof(int));
+
+                    // InStr(start, string, find): the position is counted from the beginning of the string
+                    if (args.Count == 3 && IsNumber(args[0].Type))
+                    {
+                        var start = Coerce(args[0], typeof(int)).ToOperand();
+                        return new StiCrystalExpression(
+                            $"{args[1].ToOperand()}.IndexOf({args[2].Code}, {start} - 1) + 1", typeof(int));
+                    }
+
+                    break;
+
+                // ToWords(value, 0) writes the whole number; the variant with the decimals as "45 / 100" is not
+                // in Stimulsoft
+                case "towords":
+                    if (args.Count >= 1 && args.Count <= 2 && IsNumber(args[0].Type) &&
+                        (args.Count == 1 || args[1].Code == "0"))
+                    {
+                        return new StiCrystalExpression($"ToWords({Coerce(args[0], typeof(decimal)).Code}, false)",
+                            typeof(string), isAtomic: true);
+                    }
 
                     break;
 
@@ -406,17 +427,33 @@ namespace Import.CrystalReports.Formulas
 
                     break;
 
+                // DateSerial takes long: a number field or a formula of the month gave CS1502
                 case "monthname":
                     if (args.Count >= 1 && args.Count <= 2)
-                        return NameOfDate("MMMM", "MMM", $"DateSerial(2000, {args[0].Code}, 1)", args);
+                    {
+                        var month = Coerce(args[0], typeof(long)).Code;
+                        return NameOfDate("MMMM", "MMM", $"DateSerial(2000, {month}, 1)", args);
+                    }
 
                     break;
 
                 case "weekdayname":
                     if (args.Count >= 1 && args.Count <= 2)
-                        return NameOfDate("dddd", "ddd", $"DateSerial(2000, 1, 1 + {args[0].ToOperand()})", args);
+                    {
+                        var weekday = Coerce(args[0], typeof(long)).ToOperand();
+                        return NameOfDate("dddd", "ddd", $"DateSerial(2000, 1, 1 + {weekday})", args);
+                    }
 
                     break;
+
+                case "dateserial":
+                    if (args.Count == 3 && args.All(a => IsNumber(a.Type)))
+                        return TranslateDate(args);
+
+                    break;
+
+                case "datepart":
+                    return TranslateDatePart(args);
 
                 case "dateadd":
                     return TranslateDateAdd(args, position);
@@ -581,6 +618,47 @@ namespace Import.CrystalReports.Formulas
             return null;
         }
 
+        /// <summary>
+        /// DatePart("m", date) and the other intervals as the members of the date; the week day and the week of the
+        /// year are not translated.
+        /// </summary>
+        private static StiCrystalExpression TranslateDatePart(List<StiCrystalExpression> args)
+        {
+            if (args.Count != 2 || args[0].Literal == null || !IsDate(args[1].Type))
+                return null;
+
+            var date = args[1];
+            switch (args[0].Literal.ToLowerInvariant())
+            {
+                case "yyyy":
+                    return Member(date, "Year", typeof(int));
+
+                case "q":
+                    return new StiCrystalExpression($"({date.ToOperand()}.Month - 1) / 3 + 1", typeof(int));
+
+                case "m":
+                    return Member(date, "Month", typeof(int));
+
+                case "y":
+                    return Member(date, "DayOfYear", typeof(int));
+
+                case "d":
+                    return Member(date, "Day", typeof(int));
+
+                case "h":
+                    return Member(date, "Hour", typeof(int));
+
+                case "n":
+                    return Member(date, "Minute", typeof(int));
+
+                case "s":
+                    return Member(date, "Second", typeof(int));
+
+                default:
+                    return null;
+            }
+        }
+
         private static StiCrystalExpression TranslateDateTime(List<StiCrystalExpression> args)
         {
             if (args.Count == 6)
@@ -655,6 +733,13 @@ namespace Import.CrystalReports.Formulas
                         return new StiCrystalExpression("Math.PI", typeof(double), isAtomic: true);
 
                     break;
+
+                // Rand of Stimulsoft returns object
+                case "rnd":
+                    if (args.Count == 0)
+                        return new StiCrystalExpression("((double)Rand())", typeof(double), isAtomic: true);
+
+                    break;
             }
 
             return null;
@@ -674,6 +759,34 @@ namespace Import.CrystalReports.Formulas
                 case "isnull":
                     if (args.Count == 1)
                         return TranslateIsNull(args[0], position);
+
+                    break;
+
+                // Yes and No are the boolean constants of Crystal beside True and False
+                case "yes":
+                case "no":
+                    if (args.Count == 0)
+                        return new StiCrystalExpression(name == "yes" ? "true" : "false", typeof(bool),
+                            isAtomic: true);
+
+                    break;
+
+                // Stimulsoft repeats a group header as the same band, so the condition is false
+                case "inrepeatedgroupheader":
+                    if (args.Count == 0)
+                        return new StiCrystalExpression("false", typeof(bool), isAtomic: true);
+
+                    break;
+
+                case "hasvalue":
+                    if (args.Count == 1)
+                        return TranslateHasValue(args[0]);
+
+                    break;
+
+                case "groupname":
+                    if (args.Count >= 1 && args.Count <= 2)
+                        return TranslateGroupName(args, position);
 
                     break;
 
@@ -706,6 +819,8 @@ namespace Import.CrystalReports.Formulas
                 case "distinctcount":
                 case "stddev":
                 case "populationstddev":
+                case "median":
+                case "mode":
                     return TranslateSummary(name, args, position);
 
                 case "pagenumber":
@@ -777,15 +892,18 @@ namespace Import.CrystalReports.Formulas
 
         /// <summary>
         /// The summaries over the whole report or over a group: Sum({field}) or Sum({field}, {group condition}).
+        /// The third argument is the period of a group by a date, like "monthly": the band of the group by the
+        /// field is taken, the report groups by the field with that period.
         /// </summary>
         private StiCrystalExpression TranslateSummary(string name, List<StiCrystalExpression> args, int position)
         {
-            if (args.Count < 1 || args.Count > 2)
+            if (args.Count < 1 || args.Count > 3 || args.Count == 3 && args[2].Literal == null)
                 return null;
 
             var function = name == "sum" ? "Sum" : name == "average" ? "Avg" : name == "count" ? "Count"
                 : name == "distinctcount" ? "CountDistinct" : name == "stddev" ? "StDev"
-                : name == "populationstddev" ? "StDevP" : name == "minimum" ? "Min" : "Max";
+                : name == "populationstddev" ? "StDevP" : name == "median" ? "Median"
+                : name == "mode" ? "Mode" : name == "minimum" ? "Min" : "Max";
 
             // The numeric summaries of Stimulsoft return decimal in the compilation mode, StDev returns double
             var type = function == "Count" || function == "CountDistinct" ? typeof(int)
@@ -806,14 +924,7 @@ namespace Import.CrystalReports.Formulas
                 }
             }
 
-            var band = string.Empty;
-            if (args.Count == 2)
-            {
-                var groupName = args[1].Reference?.Name;
-                band = groupName != null ? resolver.ResolveGroupBand(groupName) : null;
-                if (band == null)
-                    throw new StiCrystalFormulaException("The group of the summary is unknown", position);
-            }
+            var band = args.Count >= 2 ? ResolveGroupBand(args[1], position) : string.Empty;
 
             HasSummaries = true;
 
@@ -824,6 +935,40 @@ namespace Import.CrystalReports.Formulas
 
             var separator = band.Length > 0 ? ", " : string.Empty;
             return new StiCrystalExpression($"{function}({band}{separator}{args[0].Code})", type, isAtomic: true);
+        }
+
+        private string ResolveGroupBand(StiCrystalExpression condition, int position)
+        {
+            var groupName = condition.Reference?.Name;
+            var band = groupName != null ? resolver.ResolveGroupBand(groupName) : null;
+            if (band == null)
+                throw new StiCrystalFormulaException("The group of the summary is unknown", position);
+
+            return band;
+        }
+
+        /// <summary>
+        /// GroupName({field}) is the value of the group as text; the group must be in the report. The period of a
+        /// group by a date is not applied: the text is the date of the current row.
+        /// </summary>
+        private StiCrystalExpression TranslateGroupName(List<StiCrystalExpression> args, int position)
+        {
+            ResolveGroupBand(args[0], position);
+            return args[0].Type == typeof(string) ? args[0] : ToText(args[0]);
+        }
+
+        /// <summary>
+        /// A variable of Stimulsoft always has a value: HasValue checks that a text or a list is not empty.
+        /// </summary>
+        private static StiCrystalExpression TranslateHasValue(StiCrystalExpression value)
+        {
+            if (value.Reference != null && value.Reference.IsMultiValue)
+                return new StiCrystalExpression($"{value.ToOperand()}.Count > 0", typeof(bool));
+
+            if (value.Type == typeof(string))
+                return new StiCrystalExpression($"{value.ToOperand()}.Length > 0", typeof(bool));
+
+            return new StiCrystalExpression("true", typeof(bool), isAtomic: true);
         }
         #endregion
 
