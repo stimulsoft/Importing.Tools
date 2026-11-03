@@ -313,6 +313,8 @@ namespace Import.CrystalReports.Formulas
 
         /// <summary>
         /// Mid of Crystal counts the characters from 1, Mid of Stimulsoft from 0; without the length it takes the rest.
+        /// The rest is the length of the string: the parser of the interpretation mode does not know int.MaxValue,
+        /// and Substring adds the length to the start, so int.MaxValue overflows and throws in the compilation too.
         /// </summary>
         private static StiCrystalExpression TranslateMid(List<StiCrystalExpression> args)
         {
@@ -324,7 +326,7 @@ namespace Import.CrystalReports.Formulas
             if (int.TryParse(args[1].Code, NumberStyles.None, CultureInfo.InvariantCulture, out startValue))
                 start = (startValue - 1).ToString(CultureInfo.InvariantCulture);
 
-            var length = args.Count == 3 ? Coerce(args[2], typeof(int)).Code : "int.MaxValue";
+            var length = args.Count == 3 ? Coerce(args[2], typeof(int)).Code : $"Length({args[0].Code})";
             return new StiCrystalExpression($"Mid({args[0].Code}, {start}, {length})", typeof(string), isAtomic: true);
         }
 

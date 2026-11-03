@@ -407,10 +407,25 @@ namespace Import.CrystalReports.Formulas
 
             var value = double.Parse(node.Text, CultureInfo.InvariantCulture);
             var code = value.ToString("R", CultureInfo.InvariantCulture);
+            if (code.IndexOf('E') >= 0)
+                code = GetNumberWithoutExponent(value, code);
+
             if (code.IndexOf('.') < 0 && code.IndexOf('E') < 0)
                 code += ".0";
 
             return new StiCrystalExpression(code, typeof(double), isAtomic: true);
+        }
+
+        /// <summary>
+        /// The parser of the interpretation mode does not read the exponent: 1E-07 is the name 1E minus 07 there,
+        /// so the number is written with all its digits; only a number beyond decimal keeps the exponent.
+        /// </summary>
+        private static string GetNumberWithoutExponent(double value, string code)
+        {
+            if (Math.Abs(value) >= (double)decimal.MaxValue)
+                return code;
+
+            return ((decimal)value).ToString(CultureInfo.InvariantCulture);
         }
 
         /// <summary>

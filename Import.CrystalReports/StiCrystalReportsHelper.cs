@@ -47,6 +47,7 @@ using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
 using Import.CrystalReports.Formulas;
 using System.Runtime.ExceptionServices;
+using Regex = System.Text.RegularExpressions.Regex;
 //using CrystalDecisions.ReportAppServer.ReportDefModel;
 
 
@@ -1807,6 +1808,10 @@ namespace Import.CrystalReports
 
 		private string GetFormulaField(FieldObject obj)
 		{
+            // The engine gives a SQL expression field the kind of a formula field, only its name {%Name} tells it
+            if (obj.DataSource.FormulaName.StartsWith("{%", StringComparison.Ordinal))
+                return GetSQLExpressionField(obj);
+
             return "{" + ReplaceFieldsAndVariables(obj.DataSource.FormulaName.Substring(1, obj.DataSource.FormulaName.Length - 2)) + "}";
 		}
 
@@ -1935,6 +1940,23 @@ namespace Import.CrystalReports
                 "The SQL expression fields are not supported"));
             return string.Empty;
 		}
+
+        /// <summary>
+        /// A text object keeps its embedded fields as {name}, so a SQL expression stays there as {%Name}, which the
+        /// interpretation reads as the expression %Name (the lessons of the corpus: {%Str Concatenate}).
+        /// </summary>
+        private string RemoveSQLExpressionFields(string text)
+        {
+            if (string.IsNullOrEmpty(text) || text.IndexOf("{%", StringComparison.Ordinal) < 0)
+                return text;
+
+            return Regex.Replace(text, @"\{%[^{}]*\}", match =>
+            {
+                warningList.Add(StiWarning.GetWarningFormula(match.Value,
+                    "The SQL expression fields are not supported"));
+                return string.Empty;
+            });
+        }
 
 
 		private string GetSummaryField(FieldObject obj, StiComponent component)
@@ -2132,7 +2154,7 @@ namespace Import.CrystalReports
 
             text.Border = ConvertBorder(obj.Border);
             //text.Text = ReplaceFieldsAndVariables(obj.Text.Replace("\n", ""));
-            text.Text = ReplaceFieldsAndVariables(obj.Text);
+            text.Text = RemoveSQLExpressionFields(ReplaceFieldsAndVariables(obj.Text));
             AddEmbeddedFieldsText(text);
             text.Font = obj.Font;
 
