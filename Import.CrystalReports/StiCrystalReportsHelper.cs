@@ -104,7 +104,6 @@ namespace Import.CrystalReports
         private ArrayList summaryFieldsList = null;
         private ArrayList subreportsList = null;
         private StiReport stimulReport = null;
-        private Hashtable htNames = null;
         private ArrayList dataSourcesOnThisPage = null;
         #endregion
 
@@ -195,17 +194,7 @@ namespace Import.CrystalReports
 
         private string CheckComponentsNames(string name)
         {
-            if (htNames.Contains(name))
-            {
-                int nameIndex = 1;
-                while (htNames.Contains(string.Format("{0}_{1}", name, nameIndex)))
-                {
-                    nameIndex++;
-                }
-                name = string.Format("{0}_{1}", name, nameIndex);
-            }
-            htNames[name] = name;
-            return name;
+            return CreateMemberName(name);
         }
 
         public static string ReplaceSymbols(string str)
@@ -411,14 +400,15 @@ namespace Import.CrystalReports
                 #endregion
 
                 stimulReport.Info.ShowHeaders = false;
-                htNames = new Hashtable();
+                InitMemberNames(crystalReport);
+                memberNames.Add(stimulReport.Pages[0].Name);
 
                 if ((crystalReport.Subreports != null) && (crystalReport.Subreports.Count > 0))
                 {
                     for (int indexPage = 0; indexPage < crystalReport.Subreports.Count; indexPage++)
                     {
                         StiPage page = new StiPage(stimulReport);
-                        page.Name = crystalReport.Subreports[indexPage].Name;
+                        page.Name = CreateMemberName(crystalReport.Subreports[indexPage].Name);
                         stimulReport.Pages.Add(page);
                     }
                 }
@@ -928,20 +918,20 @@ namespace Import.CrystalReports
                 if ((htTableNameToDatabase[table.Name] as StiOleDbDatabase) != null)
                 {
                     string nameInSource = database.Name;
-                    dataSource = new StiOleDbSource(nameInSource, StiNameValidator.CorrectName(table.Name), table.Name);
+                    dataSource = new StiOleDbSource(nameInSource, GetDataSourceName(table.Name), table.Name);
                 }
                 if ((htTableNameToDatabase[table.Name] as StiXmlDatabase) != null)
                 {
                     string nameInSource = database.Name + "." + table.Name;
-                    dataSource = new StiDataTableSource(nameInSource, StiNameValidator.CorrectName(table.Name), table.Name);
+                    dataSource = new StiDataTableSource(nameInSource, GetDataSourceName(table.Name), table.Name);
                 }
                 if ((htTableNameToDatabase[table.Name] as StiOdbcDatabase) != null)
                 {
-                    dataSource = new StiOdbcSource(database.Name, StiNameValidator.CorrectName(table.Name), table.Name);
+                    dataSource = new StiOdbcSource(database.Name, GetDataSourceName(table.Name), table.Name);
                 }
                 if (dataSource == null)
                 {
-                    dataSource = new StiSqlSource(database.Name, StiNameValidator.CorrectName(table.Name), table.Name);
+                    dataSource = new StiSqlSource(database.Name, GetDataSourceName(table.Name), table.Name);
                 }
 
                 var sqlSource = dataSource as StiSqlSource;
@@ -951,18 +941,34 @@ namespace Import.CrystalReports
                 foreach (DatabaseFieldDefinition field in table.Fields)
                 {
                     //dataSource.Columns.Add(FieldNameCorrection(field.Name), field.Name, typeof(object));
-                    StiDataColumn column = new StiDataColumn(field.Name, FieldNameCorrection(field.Name), field.Name, ConvertType(field.ValueType));
+                    var column = new StiDataColumn(field.Name, CreateColumnName(dataSource, field.Name), field.Name,
+                        ConvertType(field.ValueType));
                     dataSource.Columns.Add(column);
                 }
 
                 //stimulReport.Dictionary.DataSources.Add(dataSource);
                 bool founded2 = false;
+                // A table of a subreport which reads the same as a table of the report is that source; every
+                // subreport has its own Command with another query, one source of the name lost their columns
+                var query = GetTableQuery(table);
                 foreach (StiDataSource tempDataSource in stimulReport.Dictionary.DataSources)
                 {
-                    if (tempDataSource.Name == dataSource.Name) founded2 = true;
+                    string tempQuery;
+                    if (tempDataSource.Alias == table.Name &&
+                        dataSourceQueries.TryGetValue(tempDataSource, out tempQuery) && tempQuery == query)
+                    {
+                        founded2 = true;
+                        dataSource.Name = tempDataSource.Name;
+                        StiCrystalNameTable.MergeColumns(tempDataSource, dataSource);
+                        break;
+                    }
                 }
+                if (!founded2 && stimulReport.Dictionary.DataSources[dataSource.Name] != null)
+                    dataSource.Name = CreateMemberName(table.Name);
+
                 if (!founded2)
                 {
+                    dataSourceQueries[dataSource] = query;
                     stimulReport.Dictionary.DataSources.Add(dataSource);
                     log.WriteNode("Datasource: ", dataSource.Name);
                 }
@@ -1034,8 +1040,6 @@ namespace Import.CrystalReports
             {
                 StiDataRelation relation = new StiDataRelation();
                 relation.Alias = string.Format("{0} to {1}", link.SourceTable.Name, link.DestinationTable.Name);
-                relation.Name = ReplaceSymbols(link.DestinationTable.Name);
-                relation.NameInSource = ReplaceSymbols(link.DestinationTable.Name);
                 relation.ParentSource = (StiDataSource)htTableNameToDataSource[link.DestinationTable.Name];
                 relation.ParentColumns = new string[link.DestinationFields.Count];
                 for (int fieldIndex = 0; fieldIndex < link.DestinationFields.Count; fieldIndex++)
@@ -1048,6 +1052,8 @@ namespace Import.CrystalReports
                 {
                     relation.ChildColumns[fieldIndex] = link.SourceFields[fieldIndex].Name;
                 }
+                relation.Name = CreateRelationName(relation, link.DestinationTable.Name);
+                relation.NameInSource = relation.Name;
                 stimulReport.Dictionary.Relations.Add(relation);
                 htDataSourceParent[relation.ParentSource] = relation.ParentSource;
 
@@ -1072,6 +1078,14 @@ namespace Import.CrystalReports
                 }
             }
 
+            // A table of a subreport which repeats a table of the report is a copy outside the dictionary and has no
+            // relations, so its parent tables are not reached; their fields were written without the source
+            foreach (StiDataSource dataSource in dataSourcesOnThisPage)
+            {
+                if (!htDataSourceToNameWithRelation.ContainsKey(dataSource))
+                    MakeTableNameRecursive(dataSource, dataSource.Name);
+            }
+
             htFieldNameConversion = new Hashtable();
             foreach (Table table in crystalReport.Database.Tables)
             {
@@ -1080,13 +1094,13 @@ namespace Import.CrystalReports
                 foreach (DatabaseFieldDefinition field in table.Fields)
                 {
                     string fieldNameCR = field.TableName + "." + field.Name;
-                    string fieldNameSR = dsRelationName + FieldNameCorrection(field.Name);
+                    string fieldNameSR = dsRelationName + GetColumnName(ds, field.Name);
                     htFieldNameConversion[fieldNameCR] = fieldNameSR;
 
                     resolver.AddReference(fieldNameCR, new StiCrystalReference(fieldNameSR, ConvertType(field.ValueType))
                     {
                         DataSourceName = ds.Name,
-                        ColumnName = FieldNameCorrection(field.Name)
+                        ColumnName = GetColumnName(ds, field.Name)
                     });
                 }
             }
@@ -1155,13 +1169,13 @@ namespace Import.CrystalReports
                 if (formulaName != null && formulaName.Trim().Length > 0)
                 {
                     formulaName = formulaName.Substring(1, formulaName.Length - 2);
-                    string formulaNameNormalized = ReplaceSymbols(formulaName).Substring(1);
+                    string formulaNameNormalized = CreateMemberName(formulaName.Substring(1));
                     string value = formula.Text != null ? ReplaceFieldsAndVariables(formula.Text) : string.Empty;
                     value = value.Replace("\r", "");
 
                     StiVariable variable = new StiVariable("Formula Fields");
                     variable.Name = formulaNameNormalized;
-                    variable.Alias = formulaNameNormalized;
+                    variable.Alias = formulaName.Substring(1);
                     variable.Type = typeof(string);
                     variable.ReadOnly = true;
                     variable.Value = value.Replace("\n", " ");
@@ -1186,7 +1200,7 @@ namespace Import.CrystalReports
                 if (formulaName != null && formulaName.Trim().Length > 0)
                 {
                     formulaName = formulaName.Substring(1, formulaName.Length - 2);
-                    string formulaNameNormalized = ReplaceSymbols(formulaName).Substring(1);
+                    string formulaNameNormalized = CreateMemberName(formulaName.Substring(1));
                     string value = formula.SummarizedField.FormulaName != null ? formula.SummarizedField.FormulaName : string.Empty;
                     value = value.Substring(1, value.Length - 2);
                     //value = ReplaceFieldsAndVariables(value.Replace("\r", "").Replace("\n", ""));
@@ -1206,7 +1220,7 @@ namespace Import.CrystalReports
 
                     StiVariable variable = new StiVariable("RunningTotal Fields");
                     variable.Name = formulaNameNormalized;
-                    variable.Alias = formulaNameNormalized;
+                    variable.Alias = formulaName.Substring(1);
                     if (flag)
                     {
                         //Totals.Sum returns decimal
@@ -1216,9 +1230,12 @@ namespace Import.CrystalReports
                     }
                     else
                     {
+                        // The total of a formula is calculated in the texts by its running expression; the code of a
+                        // string variable with the value Totals.Sum(...) turns the totals into a broken literal
                         variable.ReadOnly = false;
                         variable.InitBy = StiVariableInitBy.Value;
                         variable.Type = typeof(string);
+                        value = string.Empty;
                     }
                     variable.Value = value;
                     stimulReport.Dictionary.Variables.Add(variable);
@@ -1241,9 +1258,9 @@ namespace Import.CrystalReports
             foreach (ParameterFieldDefinition parameter in crystalReport.DataDefinition.ParameterFields)
             {
                 StiVariable variable = new StiVariable("ParameterField");
-                string parameterName = ReplaceSymbols(parameter.ParameterFieldName);
+                string parameterName = GetParameterVariableName(parameter.ParameterFieldName);
                 variable.Name = parameterName;
-                variable.Alias = parameterName;
+                variable.Alias = parameter.ParameterFieldName;
                 switch (parameter.ParameterValueKind)
                 {
                     case ParameterValueKind.BooleanParameter:
@@ -1909,9 +1926,14 @@ namespace Import.CrystalReports
 		}
 
 
-		private static string GetSQLExpressionField(FieldObject obj)
+        /// <summary>
+        /// A SQL expression is calculated by the database; {%Name} in the text broke the compilation of the report.
+        /// </summary>
+		private string GetSQLExpressionField(FieldObject obj)
 		{
-			return obj.DataSource.FormulaName;
+            warningList.Add(StiWarning.GetWarningFormula(obj.DataSource.FormulaName,
+                "The SQL expression fields are not supported"));
+            return string.Empty;
 		}
 
 
@@ -1944,17 +1966,23 @@ namespace Import.CrystalReports
                 case SummaryOperation.Sum:
                     operation = "Sum";
                     break;
-                default:
-                    StringBuilder opSb = new StringBuilder();
-                    int pos = 0;
-                    while ((pos < sfd.FormulaName.Length) && (char.IsLetter(sfd.FormulaName[pos])))
-                    {
-                        opSb.Append(sfd.FormulaName[pos]);
-                        pos++;
-                    }
-                    operation = opSb.ToString();
+                case SummaryOperation.DistinctCount:
+                    operation = "CountDistinct";
                     break;
+                case SummaryOperation.SampleStandardDeviation:
+                    operation = "StDev";
+                    break;
+                case SummaryOperation.PopStandardDeviation:
+                    operation = "StDevP";
+                    break;
+                default:
+                    // Variance, NthLargest and the others have no aggregate function in Stimulsoft, and the name of
+                    // Crystal in the text broke the compilation of the whole report
+                    warningList.Add(StiWarning.GetWarningFormula(obj.Name,
+                        $"The summary {sfd.Operation} is not supported"));
+                    return string.Empty;
             }
+            operation = GetTypedSummaryOperation(operation, sfd.SummarizedField.ValueType);
             if (sfd.Group != null)
             {
                 DictionaryEntry dicEntry = new DictionaryEntry();
@@ -2004,7 +2032,32 @@ namespace Import.CrystalReports
         /// </summary>
         private string GetSummaryNotNullCondition(string operation, string field)
         {
-            return operation == "Avg" || operation == "Min" || operation == "Max" ? GetNotNullCondition(field) : null;
+            return operation == "Avg" || operation.StartsWith("Min") || operation.StartsWith("Max")
+                ? GetNotNullCondition(field)
+                : null;
+        }
+
+        /// <summary>
+        /// Min and Max of Stimulsoft are numeric: a string or a date gave 0, the functions MinStr, MinDate and others
+        /// keep the value.
+        /// </summary>
+        private static string GetTypedSummaryOperation(string operation, FieldValueType type)
+        {
+            if (operation != "Min" && operation != "Max")
+                return operation;
+
+            switch (type)
+            {
+                case FieldValueType.StringField:
+                    return operation + "Str";
+
+                case FieldValueType.DateField:
+                case FieldValueType.DateTimeField:
+                    return operation + "Date";
+
+                default:
+                    return operation;
+            }
         }
 
         private string GetNotNullCondition(string field)

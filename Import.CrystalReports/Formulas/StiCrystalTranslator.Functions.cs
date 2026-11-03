@@ -48,6 +48,9 @@ namespace Import.CrystalReports.Formulas
             if (lowerName == "iif")
                 return TranslateIif(argumentNodes, position);
 
+            if (lowerName == "switch")
+                return TranslateSwitch(argumentNodes, position);
+
             var args = argumentNodes.Select(TranslateNode).ToList();
             var result = TranslateStringFunction(lowerName, args, position)
                 ?? TranslateDateFunction(lowerName, args, position)
@@ -69,6 +72,41 @@ namespace Import.CrystalReports.Formulas
 
             var node = new StiCrystalNode(StiCrystalNodeKind.If, null, position, argumentNodes.ToArray());
             return TranslateIf(node);
+        }
+
+        /// <summary>
+        /// Switch(condition1, value1, condition2, value2, ...) gives the value of the first true condition and the
+        /// default value of the type when no condition is true, as Crystal does; it becomes a chain of the ternary
+        /// operators built from the last pair.
+        /// </summary>
+        private StiCrystalExpression TranslateSwitch(List<StiCrystalNode> argumentNodes, int position)
+        {
+            if (argumentNodes.Count < 2 || argumentNodes.Count % 2 != 0)
+                throw new StiCrystalFormulaException("Switch needs pairs of a condition and a value", position);
+
+            var node = new StiCrystalNode(StiCrystalNodeKind.If, null, position, argumentNodes.ToArray());
+            var conditions = new List<StiCrystalExpression>();
+            var values = new List<StiCrystalExpression>();
+            for (var index = 0; index < argumentNodes.Count; index += 2)
+            {
+                var condition = TranslateNode(argumentNodes[index]);
+                RequireBoolean(condition, node);
+                conditions.Add(condition);
+                values.Add(TranslateNode(argumentNodes[index + 1]));
+            }
+
+            var result = GetDefaultValue(values.Last().Type);
+            for (var index = conditions.Count - 1; index >= 0; index--)
+            {
+                // The usual last pair True, value is the default branch
+                if (conditions[index].Code == "true")
+                    result = values[index];
+
+                else
+                    result = CreateConditional(conditions[index], values[index], result, node);
+            }
+
+            return result;
         }
 
         #region Methods.Strings
@@ -666,6 +704,8 @@ namespace Import.CrystalReports.Formulas
                 case "average":
                 case "count":
                 case "distinctcount":
+                case "stddev":
+                case "populationstddev":
                     return TranslateSummary(name, args, position);
 
                 case "pagenumber":
@@ -744,10 +784,13 @@ namespace Import.CrystalReports.Formulas
                 return null;
 
             var function = name == "sum" ? "Sum" : name == "average" ? "Avg" : name == "count" ? "Count"
-                : name == "distinctcount" ? "CountDistinct" : name == "minimum" ? "Min" : "Max";
+                : name == "distinctcount" ? "CountDistinct" : name == "stddev" ? "StDev"
+                : name == "populationstddev" ? "StDevP" : name == "minimum" ? "Min" : "Max";
 
-            // The numeric summaries of Stimulsoft return decimal in the compilation mode
-            var type = function == "Count" || function == "CountDistinct" ? typeof(int) : typeof(decimal);
+            // The numeric summaries of Stimulsoft return decimal in the compilation mode, StDev returns double
+            var type = function == "Count" || function == "CountDistinct" ? typeof(int)
+                : function.StartsWith("StDev") ? typeof(double)
+                : typeof(decimal);
             if (function == "Min" || function == "Max")
             {
                 if (IsDate(args[0].Type))

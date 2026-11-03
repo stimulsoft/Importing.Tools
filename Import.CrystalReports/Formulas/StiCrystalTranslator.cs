@@ -493,6 +493,17 @@ namespace Import.CrystalReports.Formulas
 
                 case "startswith":
                     RequireString(left, node);
+
+                    // StartsWith ["Alley", "Back"] is true for any of the prefixes
+                    if (right.IsArray)
+                    {
+                        var parts = right.Items.Select(item =>
+                            new StiCrystalExpression($"{left.ToOperand()}.StartsWith({item.Code})", typeof(bool)));
+                        return right.Items.Count > 0
+                            ? JoinConditions(parts.ToList(), " || ")
+                            : new StiCrystalExpression("false", typeof(bool), isAtomic: true);
+                    }
+
                     RequireString(right, node);
                     return new StiCrystalExpression($"{left.ToOperand()}.StartsWith({right.Code})", typeof(bool));
 
@@ -584,6 +595,14 @@ namespace Import.CrystalReports.Formulas
         private StiCrystalExpression TranslateComparison(string op, StiCrystalExpression left,
             StiCrystalExpression right, StiCrystalNode node)
         {
+            // A value equals an array when it is one of its items, as Crystal compares {field} = ["A", "B"]; the
+            // array has no code of its own, so the comparison gave "field == " before
+            if ((op == "=" || op == "<>") && (right.IsArray || left.IsArray))
+            {
+                var inArray = right.IsArray ? TranslateIn(left, right, node) : TranslateIn(right, left, node);
+                return op == "=" ? inArray : new StiCrystalExpression("!" + inArray.ToOperand(), typeof(bool));
+            }
+
             if (op == "=" && (right.IsRange || right.Reference != null && right.Reference.IsMultiValue))
                 return TranslateIn(left, right, node);
 

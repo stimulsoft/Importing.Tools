@@ -178,8 +178,9 @@ namespace Import.CrystalReports
 
                 reference.Type = expression.Type;
 
-                // A running function is calculated only in a text, so the variable keeps the text of the formula
-                if (IsRunningExpression(expression.Code))
+                // A running function and a summary are calculated only in a text, which gets the expression inline,
+                // so the variable keeps the text of the formula: the code of a variable doesn't know Count()
+                if (IsRunningExpression(expression.Code) || translator.HasSummaries)
                 {
                     variable.InitBy = StiVariableInitBy.Value;
                     variable.Type = typeof(string);
@@ -533,15 +534,7 @@ namespace Import.CrystalReports
             if (globalVariables.TryGetValue(name, out reference))
                 return reference;
 
-            var variableName = StiNameValidator.CorrectName(name);
-            var baseName = variableName;
-            var index = 1;
-            while (stimulReport.Dictionary.Variables[variableName] != null ||
-                stimulReport.Dictionary.DataSources[variableName] != null)
-            {
-                variableName = baseName + "Var" + (index > 1 ? index.ToString() : string.Empty);
-                index++;
-            }
+            var variableName = CreateMemberName(name);
 
             var variable = new StiVariable("Crystal Variables")
             {
@@ -555,8 +548,9 @@ namespace Import.CrystalReports
             if (type == typeof(double) || type == typeof(decimal))
                 variable.Value = "0";
 
+            // The code of the report takes the value as it is, and False is not a literal of C#
             else if (type == typeof(bool))
-                variable.Value = "False";
+                variable.Value = "false";
 
             else if (type == typeof(string))
                 variable.Value = string.Empty;

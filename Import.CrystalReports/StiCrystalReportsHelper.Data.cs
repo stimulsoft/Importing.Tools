@@ -100,6 +100,19 @@ namespace Import.CrystalReports
         }
 
         /// <summary>
+        /// What a table reads: the SQL of a Command or the table of the database. The tables of the report and of
+        /// its subreports with one name and one query are one data source.
+        /// </summary>
+        private static string GetTableQuery(Table table)
+        {
+            var connection = table.LogOnInfo.ConnectionInfo;
+            var command = GetRasObject(table, "RasTable") as RasData.CommandTable;
+            var query = command != null ? command.CommandText : table.Location;
+
+            return $"{connection.ServerName}|{connection.DatabaseName}|{query}";
+        }
+
+        /// <summary>
         /// Sets the SQL of a data source by the table of the RAS: the text of a Command, the call of a stored procedure
         /// or the selection of a table. It runs after the parameters became the variables of the dictionary.
         /// </summary>

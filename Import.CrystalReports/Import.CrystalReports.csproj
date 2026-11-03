@@ -165,6 +165,8 @@
     <Compile Include="StiCrystalReportsHelper.Formats.cs" />
     <Compile Include="StiCrystalReportsHelper.RunningTotals.cs" />
     <Compile Include="StiCrystalReportsHelper.Formulas.cs" />
+    <Compile Include="StiCrystalReportsHelper.Names.cs" />
+    <Compile Include="StiCrystalNameTable.cs" />
     <Compile Include="StiCrystalReportsHelper.Objects.cs" />
     <Compile Include="IStiTreeLog.cs" />
     <Compile Include="MainForm.cs">
