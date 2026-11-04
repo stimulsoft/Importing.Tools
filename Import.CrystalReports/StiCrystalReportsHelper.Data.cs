@@ -328,6 +328,44 @@ namespace Import.CrystalReports
         }
 
         /// <summary>
+        /// The date condition of a group name like GroupName ({Orders.Date}, "monthly"), null for a group name
+        /// without a period.
+        /// </summary>
+        private static RasData.CrDateConditionEnum? GetGroupNameCondition(string groupName)
+        {
+            var match = Regex.Match(groupName ?? string.Empty, @",\s*""([^""]+)""\s*\)\s*$");
+            if (!match.Success)
+                return null;
+
+            switch (match.Groups[1].Value.ToLowerInvariant())
+            {
+                case "daily":
+                    return RasData.CrDateConditionEnum.crDateConditionDaily;
+
+                case "weekly":
+                    return RasData.CrDateConditionEnum.crDateConditionWeekly;
+
+                case "monthly":
+                    return RasData.CrDateConditionEnum.crDateConditionMonthly;
+
+                case "quarterly":
+                    return RasData.CrDateConditionEnum.crDateConditionQuarterly;
+
+                case "semiannually":
+                    return RasData.CrDateConditionEnum.crDateConditionSemiannually;
+
+                case "annually":
+                    return RasData.CrDateConditionEnum.crDateConditionAnnually;
+
+                case "by hour":
+                    return RasData.CrDateConditionEnum.crDateConditionHour;
+
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>
         /// The prompt and the default values of a parameter: the prompt becomes the description of the variable,
         /// several default values become the list of the dialog, the first one becomes the value of the variable.
         /// Only strings and numbers are taken: the variable checks its value, a date in a wrong format would stop

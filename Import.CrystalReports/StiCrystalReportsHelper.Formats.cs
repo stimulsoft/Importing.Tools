@@ -97,6 +97,14 @@ namespace Import.CrystalReports
                 case RasData.CrFieldValueTypeEnum.crFieldValueTypeBooleanField:
                     ApplyBooleanFormat(text, format.BooleanFormat);
                     break;
+
+                // The group name of a group by a date is a string for RAS, but Crystal prints the start of the
+                // period by the date format of the field: lut-2025 for "monthly" and MMM-yyyy
+                case RasData.CrFieldValueTypeEnum.crFieldValueTypeStringField:
+                    if (IsDateGroupName(obj))
+                        text.TextFormat = new StiDateFormatService(GetDatePattern(format.DateFormat, isDefault), "");
+
+                    break;
             }
         }
 
@@ -314,6 +322,13 @@ namespace Import.CrystalReports
             }
 
             text.Text = value.ToString();
+        }
+
+        private static bool IsDateGroupName(ReportObject obj)
+        {
+            var field = obj as FieldObject;
+            return field?.DataSource.Kind == FieldKind.GroupNameField &&
+                GetGroupNameCondition(field.DataSource.FormulaName) != null;
         }
 
         /// <summary>

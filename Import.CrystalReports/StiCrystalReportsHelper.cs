@@ -1834,7 +1834,12 @@ namespace Import.CrystalReports
                 //field = FieldNameCorrection(formula);
                 field = formula;
             }
-            return "{" + (string)htFieldNameConversion[field] + "}";
+
+            // Crystal prints the start of the period of a group by a date, the value of its group condition
+            var name = (string)htFieldNameConversion[field];
+            var condition = GetGroupNameCondition(obj.DataSource.FormulaName);
+            var period = condition != null && name != null ? GetDatePeriod(name, condition.Value) : null;
+            return "{" + (period ?? name) + "}";
 		}
 
 
