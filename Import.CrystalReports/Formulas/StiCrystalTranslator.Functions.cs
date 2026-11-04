@@ -834,14 +834,15 @@ namespace Import.CrystalReports.Formulas
                 case "pagenofm":
                     return new StiCrystalExpression("PageNofM", typeof(string), isAtomic: true);
 
+                // Crystal numbers the records through the whole report, Line restarts in every group
                 case "recordnumber":
-                    return new StiCrystalExpression("Line", typeof(int), isAtomic: true);
+                    return new StiCrystalExpression("LineThrough", typeof(int), isAtomic: true);
 
                 case "groupnumber":
                     return new StiCrystalExpression("GroupLine", typeof(int), isAtomic: true);
 
                 case "onfirstrecord":
-                    return new StiCrystalExpression("Line == 1", typeof(bool));
+                    return new StiCrystalExpression("LineThrough == 1", typeof(bool));
 
                 case "currentfieldvalue":
                     if (args.Count == 0)

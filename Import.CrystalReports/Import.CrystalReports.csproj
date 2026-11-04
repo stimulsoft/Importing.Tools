@@ -159,6 +159,7 @@
     <Compile Include="Formulas\StiCrystalToken.cs" />
     <Compile Include="Formulas\StiCrystalTranslator.cs" />
     <Compile Include="Formulas\StiCrystalTranslator.Functions.cs" />
+    <Compile Include="StiCrystalDatePattern.cs" />
     <Compile Include="StiCrystalFormulaField.cs" />
     <Compile Include="StiCrystalRunningTotal.cs" />
     <Compile Include="StiCrystalReportResolver.cs" />

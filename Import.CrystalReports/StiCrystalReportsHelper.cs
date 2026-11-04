@@ -1884,6 +1884,15 @@ namespace Import.CrystalReports
 				{
 					return "{PageNumber}";
 				}
+				// Crystal numbers the records through the whole report, Line restarts in every group
+				case "RecordNumber":
+				{
+					return "{LineThrough}";
+				}
+				case "GroupNumber":
+				{
+					return "{GroupLine}";
+				}
 				case "DataTime":
 				{
                     if (obj.FieldFormat.TimeFormat.SecondFormat == SecondFormat.NumericSecond)

@@ -83,11 +83,11 @@ namespace Import.CrystalReports
                     break;
 
                 case RasData.CrFieldValueTypeEnum.crFieldValueTypeDateField:
-                    text.TextFormat = new StiDateFormatService(GetDatePattern(format.DateFormat, isDefault), "");
+                    ApplyDateFormat(text, obj, GetDatePattern(format.DateFormat, isDefault));
                     break;
 
                 case RasData.CrFieldValueTypeEnum.crFieldValueTypeDateTimeField:
-                    text.TextFormat = new StiDateFormatService(GetDateTimePattern(format, isDefault), "");
+                    ApplyDateFormat(text, obj, GetDateTimePattern(format, isDefault));
                     break;
 
                 case RasData.CrFieldValueTypeEnum.crFieldValueTypeTimeField:
@@ -288,12 +288,64 @@ namespace Import.CrystalReports
         }
 
         /// <summary>
+        /// .NET writes a long month in the genitive case when the pattern has a day, 04-listopada-2026 in Polish,
+        /// and Crystal writes it in the nominative case, 04-listopad-2026. A special field like PrintDate is never
+        /// NULL, so its text formats the parts of the date one by one: the month alone takes the nominative case.
+        /// </summary>
+        private static void ApplyDateFormat(StiText text, ReportObject obj, string pattern)
+        {
+            var field = obj as FieldObject;
+            var date = field?.DataSource.Kind == FieldKind.SpecialVarField
+                ? GetSpecialDate(field.DataSource.FormulaName)
+                : null;
+
+            var parts = date != null ? StiCrystalDatePattern.SplitAtLongMonth(pattern) : null;
+            if (parts == null)
+            {
+                text.TextFormat = new StiDateFormatService(pattern, "");
+                return;
+            }
+
+            var value = new StringBuilder();
+            foreach (var part in parts)
+            {
+                var escaped = part.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("{", "{{").Replace("}", "}}");
+                value.Append($"{{Format(\"{{0:{escaped}}}\", {date})}}");
+            }
+
+            text.Text = value.ToString();
+        }
+
+        /// <summary>
+        /// The expression of the date of a special field, null if the field is not a date.
+        /// </summary>
+        private static string GetSpecialDate(string name)
+        {
+            switch (name)
+            {
+                case "PrintDate":
+                case "DataDate":
+                    return "Today";
+
+                case "ModificationDate":
+                    return "ReportChanged";
+
+                case "FileCreationDate":
+                    return "ReportCreated";
+
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>
         /// The .NET pattern of a date: the order, the parts, the separators and the day of the week of Crystal.
+        /// A field without the system default prints its own parts, even if SystemDefaultType keeps UseShortDate:
+        /// such a field printed 07/10/2026 in Crystal and 10.07.2026 in Stimulsoft (G2307).
         /// </summary>
         private static string GetDatePattern(Ras.DateFieldFormat date, bool isDefault)
         {
-            if (date == null || isDefault ||
-                date.SystemDefaultType != Ras.CrDateSystemDefaultTypeEnum.crDateSystemDefaultTypeNotUsingDefaults)
+            if (date == null || isDefault)
             {
                 return date != null &&
                     date.SystemDefaultType == Ras.CrDateSystemDefaultTypeEnum.crDateSystemDefaultTypeUseLongDate
