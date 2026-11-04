@@ -949,13 +949,15 @@ namespace Import.CrystalReports
 
                 //stimulReport.Dictionary.DataSources.Add(dataSource);
                 bool founded2 = false;
-                // A table of a subreport which reads the same as a table of the report is that source; every
-                // subreport has its own Command with another query, one source of the name lost their columns
+                // A table which reads the same as a table of the page before is that source; every subreport has
+                // its own Command with another query, one source of the name lost their columns. A subreport gets
+                // its own source even for the same query: a subreport in a band of a data band read the source of
+                // that band to the end, and the band printed one row (G1051, G1042, G1549)
                 var query = GetTableQuery(table);
                 foreach (StiDataSource tempDataSource in stimulReport.Dictionary.DataSources)
                 {
                     string tempQuery;
-                    if (tempDataSource.Alias == table.Name &&
+                    if (!isSubReport && tempDataSource.Alias == table.Name &&
                         dataSourceQueries.TryGetValue(tempDataSource, out tempQuery) && tempQuery == query)
                     {
                         founded2 = true;
