@@ -927,7 +927,8 @@ namespace Import.CrystalReports.Formulas
                 }
             }
 
-            var band = args.Count >= 2 ? ResolveGroupBand(args[1], position) : string.Empty;
+            var period = args.Count == 3 ? args[2].Literal : null;
+            var band = args.Count >= 2 ? ResolveGroupBand(args[1], position, period) : string.Empty;
 
             HasSummaries = true;
 
@@ -940,10 +941,10 @@ namespace Import.CrystalReports.Formulas
             return new StiCrystalExpression($"{function}({band}{separator}{args[0].Code})", type, isAtomic: true);
         }
 
-        private string ResolveGroupBand(StiCrystalExpression condition, int position)
+        private string ResolveGroupBand(StiCrystalExpression condition, int position, string period = null)
         {
             var groupName = condition.Reference?.Name;
-            var band = groupName != null ? resolver.ResolveGroupBand(groupName) : null;
+            var band = groupName != null ? resolver.ResolveGroupBand(groupName, period) : null;
             if (band == null)
                 throw new StiCrystalFormulaException("The group of the summary is unknown", position);
 

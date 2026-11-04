@@ -240,7 +240,7 @@ namespace Import.CrystalReports
                 var group = definition.ResetCondition as CrystalDecisions.CrystalReports.Engine.Group ??
                     definition.Group;
                 var field = group?.ConditionField?.FormulaName?.Trim('{', '}');
-                var groupBand = field != null ? resolver.ResolveGroupBand(field) : null;
+                var groupBand = field != null ? resolver.ResolveGroupBand(field, GetGroupPeriod(group)) : null;
                 if (groupBand != null)
                     return groupBand;
 

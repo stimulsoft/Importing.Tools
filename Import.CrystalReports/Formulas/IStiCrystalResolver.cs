@@ -48,9 +48,10 @@ namespace Import.CrystalReports.Formulas
 
         /// <summary>
         /// Returns the name of the band of the group whose condition is the specified reference, for the summaries
-        /// like Sum({Orders.Amount}, {Orders.Customer}). Returns null if the group is unknown.
+        /// like Sum({Orders.Amount}, {Orders.Customer}). The period, like "monthly", picks one of the groups by
+        /// the same date; null takes the group by the field. Returns null if the group is unknown.
         /// </summary>
-        string ResolveGroupBand(string name);
+        string ResolveGroupBand(string name, string period);
 
         /// <summary>
         /// Returns the variable of the dictionary for a global or shared variable of a formula; the same name gives

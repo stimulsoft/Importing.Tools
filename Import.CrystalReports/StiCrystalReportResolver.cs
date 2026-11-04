@@ -53,9 +53,12 @@ namespace Import.CrystalReports
             return CurrentFieldValue;
         }
 
-        public string ResolveGroupBand(string name)
+        public string ResolveGroupBand(string name, string period)
         {
             string band;
+            if (period != null && groupBands.TryGetValue(GetGroupKey(name, period), out band))
+                return band;
+
             return groupBands.TryGetValue(name, out band) ? band : null;
         }
 
@@ -113,9 +116,21 @@ namespace Import.CrystalReports
             references.Remove(name);
         }
 
-        public void AddGroupBand(string name, string band)
+        /// <summary>
+        /// Adds the band of a group. A report can group by one date several times with different periods: G2508
+        /// groups by the quarter, the month and the week of SoldDate, and all its summaries took one band.
+        /// </summary>
+        public void AddGroupBand(string name, string band, string period)
         {
             groupBands[name] = band;
+
+            if (period != null)
+                groupBands[GetGroupKey(name, period)] = band;
+        }
+
+        private static string GetGroupKey(string name, string period)
+        {
+            return name + "|" + period.ToLowerInvariant();
         }
         #endregion
     }

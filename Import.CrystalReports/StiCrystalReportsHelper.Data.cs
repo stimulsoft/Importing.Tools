@@ -55,6 +55,18 @@ namespace Import.CrystalReports
         private static readonly string[] SqlServerProviders = { "SQLOLEDB", "SQLNCLI", "MSOLEDBSQL" };
 
         private static readonly Regex CommandParameter = new Regex(@"\{\?([^}]+)\}", RegexOptions.Compiled);
+
+        private static readonly Dictionary<string, RasData.CrDateConditionEnum> DatePeriods =
+            new Dictionary<string, RasData.CrDateConditionEnum>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "daily", RasData.CrDateConditionEnum.crDateConditionDaily },
+                { "weekly", RasData.CrDateConditionEnum.crDateConditionWeekly },
+                { "monthly", RasData.CrDateConditionEnum.crDateConditionMonthly },
+                { "quarterly", RasData.CrDateConditionEnum.crDateConditionQuarterly },
+                { "semiannually", RasData.CrDateConditionEnum.crDateConditionSemiannually },
+                { "annually", RasData.CrDateConditionEnum.crDateConditionAnnually },
+                { "by hour", RasData.CrDateConditionEnum.crDateConditionHour }
+            };
         #endregion
 
         #region Methods.Data
@@ -337,32 +349,24 @@ namespace Import.CrystalReports
             if (!match.Success)
                 return null;
 
-            switch (match.Groups[1].Value.ToLowerInvariant())
-            {
-                case "daily":
-                    return RasData.CrDateConditionEnum.crDateConditionDaily;
+            RasData.CrDateConditionEnum condition;
+            if (!DatePeriods.TryGetValue(match.Groups[1].Value, out condition))
+                return null;
 
-                case "weekly":
-                    return RasData.CrDateConditionEnum.crDateConditionWeekly;
+            return condition;
+        }
 
-                case "monthly":
-                    return RasData.CrDateConditionEnum.crDateConditionMonthly;
+        /// <summary>
+        /// The period of a group by a date as the formulas of Crystal name it, like "monthly"; null for a group
+        /// without a period or with a period which the import doesn't support.
+        /// </summary>
+        private string GetGroupPeriod(CrystalDecisions.CrystalReports.Engine.Group group)
+        {
+            var options = (GetRasObject(group, "RasGroup") as RasData.ISCRGroup)?.Options as RasData.DateGroupOptions;
+            if (options == null)
+                return null;
 
-                case "quarterly":
-                    return RasData.CrDateConditionEnum.crDateConditionQuarterly;
-
-                case "semiannually":
-                    return RasData.CrDateConditionEnum.crDateConditionSemiannually;
-
-                case "annually":
-                    return RasData.CrDateConditionEnum.crDateConditionAnnually;
-
-                case "by hour":
-                    return RasData.CrDateConditionEnum.crDateConditionHour;
-
-                default:
-                    return null;
-            }
+            return DatePeriods.FirstOrDefault(p => p.Value == options.DateCondition).Key;
         }
 
         /// <summary>

@@ -1377,21 +1377,17 @@ namespace Import.CrystalReports
             ApplyPendingTranslations();
 
             #region Fill SummaryFields with GroupBands names
-            if (summaryFieldsList.Count > 0)
+            // The group of a summary is found by its field and its period: G2508 groups by the quarter, the month
+            // and the week of one date, and the first group by the field took all the summaries
+            foreach (DictionaryEntry entry in summaryFieldsList)
             {
-                foreach (DictionaryEntry dicEntry in summaryFieldsList)
-                {
-                    for (int indexGroup = 0; indexGroup < groupFields.Count; indexGroup++)
-                    {
-                        DictionaryEntry dicEntryGroup = (DictionaryEntry)groupFields[indexGroup];
-                        if ((string)dicEntry.Value == (string)dicEntryGroup.Key)
-                        {
-                            StiComponent component = (StiComponent)dicEntry.Key;
-                            StiText text = component as StiText;
-                            text.Text = text.Text.Value.Replace("{},", (string)dicEntryGroup.Value + ",").Replace(",)}", ")}");
-                        }
-                    }
-                }
+                var group = (Tuple<string, string>)entry.Value;
+                var groupBand = resolver.ResolveGroupBand(group.Item1, group.Item2);
+                var text = entry.Key as StiText;
+                if (groupBand == null || text == null)
+                    continue;
+
+                text.Text = text.Text.Value.Replace("{},", groupBand + ",").Replace(",)}", ")}");
             }
             #endregion
 
@@ -1468,6 +1464,10 @@ namespace Import.CrystalReports
                         //bool needChild = false;
                         if (subSectionIndex == 0)
                         {
+                            string groupKey = null;
+                            string groupPeriod = null;
+                            var groupBand = band;
+
                             if (band is StiGroupHeaderBand)
                             {
                                 #region Set condition
@@ -1496,11 +1496,12 @@ namespace Import.CrystalReports
                                     groupHeaderBand.Condition.Value = field;
                                     ApplyGroupOptions(groupHeaderBand, crystalReport, conditionIndex);
                                     if (de.Key != null)
-                                        resolver.AddGroupBand((string)de.Key, band.Name);
-                                    if (de.Value == null)
                                     {
-                                        de.Value = band.Name;
-                                        groupFields[groupFieldsCounter] = de;
+                                        var groups = crystalReport.DataDefinition.Groups;
+                                        groupKey = (string)de.Key;
+                                        groupPeriod = conditionIndex < groups.Count
+                                            ? GetGroupPeriod(groups[conditionIndex])
+                                            : null;
                                     }
                                     groupFieldsCounter = conditionIndex + 1;
                                 }
@@ -1526,6 +1527,11 @@ namespace Import.CrystalReports
                                 page.Components.Add(band);
                                 band = child;
                             }
+
+                            // The group is added after the header takes its name: the name with the letter of
+                            // the section goes to the child band, and a summary over a child band doesn't compile
+                            if (groupKey != null)
+                                resolver.AddGroupBand(groupKey, groupBand.Name, groupPeriod);
                         }
                         else
                         {
@@ -1567,51 +1573,46 @@ namespace Import.CrystalReports
 			}
 		}
 
+        /// <summary>
+        /// RAS codes a section by its area, its group and its index in the area. The areas of the groups count
+        /// the groups by 1 and the sections by 50: 30050 is the section b of the first group footer. The other
+        /// areas count the sections by 1: 24002 is the section c of the details (3127 sections of the sample of
+        /// 10% follow it). Taken by 25, the sections b and c of the details of G2508 became data bands, and
+        /// the engine lost the footers of the groups after them.
+        /// </summary>
         private int GetSubSectionIndex(Section section, bool group = false)
         {
-            int sectionCode = -1;
-            object obj1 = GetPropertyFromHiddenObject(section, "RasSection.SectionCode");
-            if (obj1 != null)
-            {
-                sectionCode = (int)obj1;
-            }
+            var code = GetSectionCode(section);
+            if (code < 0)
+                return group ? -1 : 0;
 
-            while (sectionCode >= 1000)
-            {
-                sectionCode -= 1000;
-            }
+            code %= 1000;
+            if (section.Kind != AreaSectionKind.GroupHeader && section.Kind != AreaSectionKind.GroupFooter)
+                return group ? 0 : code;
 
-            int subSectionIndex = sectionCode / 25;
-            int groupIndex = sectionCode % 25;
+            return group ? code % 50 : code / 50;
+        }
 
-            return group ? groupIndex : subSectionIndex;
+        private int GetSectionCode(Section section)
+        {
+            var code = GetPropertyFromHiddenObject(section, "RasSection.SectionCode");
+            return code != null ? (int)code : -1;
         }
 
         private bool CheckNextSectionIsSecondPart(int sectionIndex, ReportDocument crystalReport)
         {
             if (sectionIndex + 1 >= crystalReport.ReportDefinition.Sections.Count) return false;
 
-            Section section1 = crystalReport.ReportDefinition.Sections[sectionIndex];
-            int sectionCode1 = -1;
-            object obj1 = GetPropertyFromHiddenObject(section1, "RasSection.SectionCode");
-            if (obj1 != null)
-            {
-                sectionCode1 = (int)obj1;
-            }
+            var section1 = crystalReport.ReportDefinition.Sections[sectionIndex];
+            var section2 = crystalReport.ReportDefinition.Sections[sectionIndex + 1];
 
-            Section section2 = crystalReport.ReportDefinition.Sections[sectionIndex + 1];
-            int sectionCode2 = -1;
-            object obj2 = GetPropertyFromHiddenObject(section2, "RasSection.SectionCode");
-            if (obj2 != null)
-            {
-                sectionCode2 = (int)obj2;
-            }
+            var code1 = GetSectionCode(section1);
+            var code2 = GetSectionCode(section2);
+            if (code1 < 0 || code2 < 0 || code1 / 1000 != code2 / 1000)
+                return false;
 
-            if (sectionCode1 / 1000 != sectionCode2 / 1000) return false;
-            while (sectionCode1 >= 1000) sectionCode1 -= 1000;
-            while (sectionCode2 >= 1000) sectionCode2 -= 1000;
-
-            return (sectionCode1 / 25 + 1) == (sectionCode2 / 25);
+            return GetSubSectionIndex(section1, group: true) == GetSubSectionIndex(section2, group: true) &&
+                GetSubSectionIndex(section1) + 1 == GetSubSectionIndex(section2);
         }
 
 		
@@ -2030,7 +2031,7 @@ namespace Import.CrystalReports
                 DictionaryEntry dicEntry = new DictionaryEntry();
                 dicEntry.Key = component;
                 string groupField = sfd.Group.ConditionField.FormulaName.Substring(1, sfd.Group.ConditionField.FormulaName.Length - 2);
-                dicEntry.Value = groupField;
+                dicEntry.Value = Tuple.Create(groupField, GetGroupPeriod(sfd.Group));
                 summaryFieldsList.Add(dicEntry);
                 if (operation == "Count")
                     return GetSummaryCountText("{}", field);
