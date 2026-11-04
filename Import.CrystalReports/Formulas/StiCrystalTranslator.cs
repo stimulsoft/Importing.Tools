@@ -78,6 +78,12 @@ namespace Import.CrystalReports.Formulas
         /// in the text of a component, so it is placed there instead of a variable.
         /// </summary>
         public bool HasSummaries { get; private set; }
+
+        /// <summary>
+        /// True if the last translated formula assigns a global variable. Crystal calculates such a formula even in
+        /// a suppressed section, so the section is not disabled.
+        /// </summary>
+        public bool HasAssignments => assignmentCount > 0;
         #endregion
 
         #region Methods
@@ -96,6 +102,7 @@ namespace Import.CrystalReports.Formulas
         public StiCrystalExpression Translate(StiCrystalNode node)
         {
             HasSummaries = false;
+            assignmentCount = 0;
             variables = new Dictionary<string, StiCrystalExpression>(StringComparer.OrdinalIgnoreCase);
 
             if (node.Kind == StiCrystalNodeKind.Sequence && node.Children.Count == 0)

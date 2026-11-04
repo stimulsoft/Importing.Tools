@@ -64,6 +64,8 @@ namespace Import.CrystalReports
         private StiCrystalReportResolver resolver;
         private Dictionary<string, StiCrystalFormulaField> formulaFields;
         private List<Action> pendingTranslations;
+        private Dictionary<StiText, string> formulaTexts;
+        private List<StiBand> suppressedBands;
         private Dictionary<string, StiCrystalReference> globalVariables;
         private StiPage formulaPage;
         #endregion
@@ -83,6 +85,8 @@ namespace Import.CrystalReports
             resolver.VariableResolving = GetGlobalVariable;
             formulaFields = new Dictionary<string, StiCrystalFormulaField>(StringComparer.OrdinalIgnoreCase);
             pendingTranslations = new List<Action>();
+            formulaTexts = new Dictionary<StiText, string>();
+            suppressedBands = new List<StiBand>();
         }
 
         /// <summary>
@@ -153,6 +157,53 @@ namespace Import.CrystalReports
             }
 
             pendingTranslations.Clear();
+            KeepAssignmentsCalculated();
+        }
+
+        /// <summary>
+        /// Crystal calculates the formulas which assign global variables even when their objects or sections are
+        /// suppressed. The interpretation mode skips a disabled component, so such a text stays enabled with zero
+        /// height, and its suppressed section becomes a band of zero height where the other objects are disabled.
+        /// </summary>
+        private void KeepAssignmentsCalculated()
+        {
+            var texts = formulaTexts
+                .Where(p => formulaFields.TryGetValue(p.Value, out var formula) && formula.HasAssignments)
+                .Select(p => p.Key)
+                .ToList();
+
+            foreach (var band in suppressedBands)
+            {
+                if (!band.Components.OfType<StiText>().Any(texts.Contains))
+                    continue;
+
+                band.Enabled = true;
+                band.Height = 0;
+                band.CanGrow = false;
+                band.Brush = new StiEmptyBrush();
+
+                foreach (StiComponent component in band.Components)
+                {
+                    if (!texts.Contains(component as StiText))
+                        component.Enabled = false;
+                }
+            }
+
+            foreach (var text in texts)
+            {
+                if (text.Enabled && !suppressedBands.Contains(text.Parent as StiBand))
+                    continue;
+
+                text.Enabled = true;
+                text.Height = 0;
+                text.CanGrow = false;
+                text.CanShrink = false;
+                text.Border = new StiBorder();
+                text.Brush = new StiEmptyBrush();
+
+                if (suppressedBands.Contains(text.Parent as StiBand))
+                    text.Top = 0;
+            }
         }
 
         /// <summary>
@@ -193,6 +244,8 @@ namespace Import.CrystalReports
                     variable.Value = expression.Code;
                     variable.Type = expression.Type;
                 }
+
+                formula.HasAssignments = translator.HasAssignments;
 
                 if (translator.HasSummaries)
                 {
@@ -340,6 +393,7 @@ namespace Import.CrystalReports
                 if (dataBand != null)
                     dataBand.CalcInvisible = true;
 
+                suppressedBands.Add(band);
                 return;
             }
 
@@ -433,6 +487,7 @@ namespace Import.CrystalReports
         /// </summary>
         private void AddFormulaFieldText(StiText text, string formulaName)
         {
+            formulaTexts[text] = formulaName;
             pendingTranslations.Add(() =>
             {
                 StiCrystalFormulaField formula;

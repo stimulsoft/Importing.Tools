@@ -64,6 +64,11 @@ namespace Import.CrystalReports
         public string InlineExpression { get; set; }
 
         /// <summary>
+        /// True if the formula assigns a global variable.
+        /// </summary>
+        public bool HasAssignments { get; set; }
+
+        /// <summary>
         /// True if Crystal calculates the formula with the default values instead of NULL, by the option of the
         /// formula or of the report; otherwise a NULL field which the formula reads gives NULL for the formula.
         /// </summary>
