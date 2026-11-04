@@ -1516,6 +1516,9 @@ namespace Import.CrystalReports
                                 child.Parent = band.Parent;
                                 child.Page = band.Page;
                                 child.Top = band.Top;
+                                // Crystal suppresses the sections of an area independently:
+                                // a hidden first section doesn't hide the next ones
+                                child.PrintIfParentDisabled = true;
 
                                 band.Height = 0;
                                 band.Brush = new StiEmptyBrush();
@@ -1533,6 +1536,9 @@ namespace Import.CrystalReports
                             child.Parent = band.Parent;
                             child.Page = band.Page;
                             child.Top = band.Top;
+                            // Crystal suppresses the sections of an area independently:
+                            // a hidden first section doesn't hide the next ones
+                            child.PrintIfParentDisabled = true;
 
                             // The options of the section are taken from the band before the child replaces it
                             if ((band as IStiPageBreak) != null)

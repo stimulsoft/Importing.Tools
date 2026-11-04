@@ -47,7 +47,7 @@ namespace Import.CrystalReports
     {
         #region Fields.RunningTotals
         private Dictionary<string, RunningTotalFieldDefinition> runningTotals;
-        private Dictionary<string, string> runningTotalExpressions;
+        private Dictionary<string, StiCrystalRunningTotal> runningTotalTranslations;
         private Dictionary<string, string> runningTotalVariables;
         #endregion
 
@@ -61,7 +61,8 @@ namespace Import.CrystalReports
             if (runningTotals == null)
             {
                 runningTotals = new Dictionary<string, RunningTotalFieldDefinition>(StringComparer.OrdinalIgnoreCase);
-                runningTotalExpressions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                runningTotalTranslations =
+                    new Dictionary<string, StiCrystalRunningTotal>(StringComparer.OrdinalIgnoreCase);
                 runningTotalVariables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             }
 
@@ -82,11 +83,12 @@ namespace Import.CrystalReports
             pendingTranslations.Add(() =>
             {
                 var result = text.Text.Value;
-                if (runningTotalExpressions != null)
+                if (runningTotalTranslations != null)
                 {
-                    foreach (var pair in runningTotalExpressions)
+                    foreach (var pair in runningTotalTranslations)
                     {
-                        result = result.Replace("{" + runningTotalVariables[pair.Key] + "}", "{" + pair.Value + "}");
+                        result = result.Replace("{" + runningTotalVariables[pair.Key] + "}",
+                            "{" + GetRunningTotalCode(pair.Value, text) + "}");
                     }
                 }
 
@@ -110,11 +112,12 @@ namespace Import.CrystalReports
 
             foreach (var pair in runningTotals)
             {
-                var expression = TranslateRunningTotal(pair.Key, pair.Value);
-                if (expression == null)
+                var total = TranslateRunningTotal(pair.Key, pair.Value);
+                if (total == null)
                     continue;
 
-                runningTotalExpressions[pair.Key] = expression.Code;
+                runningTotalTranslations[pair.Key] = total;
+                var expression = new StiCrystalExpression(total.Code, total.Type, isAtomic: true);
 
                 var reference = resolver.GetReference(pair.Key);
                 if (reference == null)
@@ -129,7 +132,7 @@ namespace Import.CrystalReports
             }
         }
 
-        private StiCrystalExpression TranslateRunningTotal(string name, RunningTotalFieldDefinition definition)
+        private StiCrystalRunningTotal TranslateRunningTotal(string name, RunningTotalFieldDefinition definition)
         {
             var function = GetRunningFunction(definition.Operation);
             if (function == null)
@@ -167,25 +170,31 @@ namespace Import.CrystalReports
             if (!TryGetRunningTotalCondition(name, definition, out condition))
                 return null;
 
-            var arguments = new List<string> { band };
-
-            // Count of Stimulsoft counts the rows, it takes only the band and the condition
-            if (function != "Count")
-                arguments.Add(value.Code);
-
-            if (condition != null)
-                arguments.Add(condition);
-
-            // The running functions of the interpretation return object, so the value is cast to its type
-            var suffix = condition != null ? "IfRunning" : "Running";
-            var code = $"(({GetTypeName(type)}){function}{suffix}({string.Join(", ", arguments)}))";
-            return new StiCrystalExpression(code, type, isAtomic: true);
+            return new StiCrystalRunningTotal(function, band, value.Code, condition, type);
         }
 
-        private static string GetTypeName(Type type)
+        /// <summary>
+        /// The expression of the running total in the text. In a group header Crystal shows the value at the first
+        /// row of the group; it is calculated when the total is reset outside the group: never, by the same group or
+        /// by an outer one.
+        /// </summary>
+        private static string GetRunningTotalCode(StiCrystalRunningTotal total, StiText text)
         {
-            return type == typeof(int) ? "int" : type == typeof(decimal) ? "decimal"
-                : type == typeof(string) ? "string" : "DateTime";
+            var band = text.Parent as StiBand;
+            var child = band as StiChildBand;
+            if (child != null)
+                band = child.GetMaster();
+
+            var header = band as StiGroupHeaderBand;
+            if (header == null || !total.CanBeShownInHeader)
+                return total.Code;
+
+            var components = header.Parent.Components;
+            var resetBand = components[total.Band];
+            var resetOutside = resetBand is StiDataBand ||
+                resetBand is StiGroupHeaderBand && components.IndexOf(resetBand) <= components.IndexOf(header);
+
+            return resetOutside ? total.GetHeaderCode(header.Name) : total.Code;
         }
 
         private static bool IsRunningExpression(string code)
@@ -297,9 +306,9 @@ namespace Import.CrystalReports
         {
             pendingTranslations.Add(() =>
             {
-                string expression;
-                if (runningTotalExpressions != null && runningTotalExpressions.TryGetValue(name, out expression))
-                    text.Text = "{" + expression + "}";
+                StiCrystalRunningTotal total;
+                if (runningTotalTranslations != null && runningTotalTranslations.TryGetValue(name, out total))
+                    text.Text = "{" + GetRunningTotalCode(total, text) + "}";
             });
         }
         #endregion

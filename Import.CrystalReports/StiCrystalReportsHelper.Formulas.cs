@@ -78,7 +78,7 @@ namespace Import.CrystalReports
         {
             formulaPage = page;
             runningTotals = null;
-            runningTotalExpressions = null;
+            runningTotalTranslations = null;
             runningTotalVariables = null;
             resolver = new StiCrystalReportResolver();
             resolver.ReferenceResolving += Resolver_ReferenceResolving;
