@@ -74,6 +74,12 @@ namespace Import.CrystalReports.Formulas
         public bool HasSummaries { get; set; }
 
         /// <summary>
+        /// False if the decimal value of a formula is a number of Crystal, not a currency; see
+        /// StiCrystalExpression.IsCurrency.
+        /// </summary>
+        public bool? IsCurrency { get; set; }
+
+        /// <summary>
         /// The fields of a database which a formula reads in any case: Crystal gives NULL for the formula when one
         /// of them is NULL. Null for the other references.
         /// </summary>

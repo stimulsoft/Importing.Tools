@@ -228,6 +228,7 @@ namespace Import.CrystalReports
                     throw new StiCrystalFormulaException("The formula is empty");
 
                 reference.Type = expression.Type;
+                reference.IsCurrency = expression.IsCurrency;
 
                 // A running function and a summary are calculated only in a text, which gets the expression inline,
                 // so the variable keeps the text of the formula: the code of a variable doesn't know Count()

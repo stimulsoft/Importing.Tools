@@ -489,7 +489,8 @@ namespace Import.CrystalReports.Formulas
 
             return new StiCrystalExpression(code, reference.Type ?? typeof(object), isAtomic: true)
             {
-                Reference = reference
+                Reference = reference,
+                IsCurrency = reference.IsCurrency
             };
         }
 
@@ -873,7 +874,18 @@ namespace Import.CrystalReports.Formulas
 
             var type = GetCommonNumberType(left.Type, right.Type);
             return new StiCrystalExpression($"{Coerce(left, type).ToOperand()} {op} {Coerce(right, type).ToOperand()}",
-                type);
+                type)
+            {
+                IsCurrency = type == typeof(decimal) ? IsCurrency(left) || IsCurrency(right) : (bool?)null
+            };
+        }
+
+        /// <summary>
+        /// True for a currency of Crystal: a decimal which is not known to be a number.
+        /// </summary>
+        private static bool IsCurrency(StiCrystalExpression value)
+        {
+            return value.Type == typeof(decimal) && value.IsCurrency != false;
         }
 
         /// <summary>
@@ -885,10 +897,14 @@ namespace Import.CrystalReports.Formulas
             RequireNumber(left, node);
             RequireNumber(right, node);
 
+            // A currency divided by a currency is a number in Crystal, a percent is printed without the currency
             var type = GetCommonNumberType(left.Type, right.Type);
             if (type == typeof(decimal))
                 return new StiCrystalExpression($"{Coerce(left, type).ToOperand()} / {Coerce(right, type).ToOperand()}",
-                    type);
+                    type)
+                {
+                    IsCurrency = IsCurrency(left) && !IsCurrency(right)
+                };
 
             var dividend = left.Type == typeof(double) ? left.ToOperand() : "(double)" + left.ToOperand();
             return new StiCrystalExpression($"{dividend} / {right.ToOperand()}", typeof(double));
@@ -934,9 +950,13 @@ namespace Import.CrystalReports.Formulas
             if (type == typeof(bool))
                 return CreateLogicalChoice(condition, thenValue, elseValue);
 
-            var code = $"{condition.ToOperand()} ? {Coerce(thenValue, type).ToOperand()} : " +
-                Coerce(elseValue, type).ToOperand();
-            return new StiCrystalExpression(code, type);
+            var thenCoerced = Coerce(thenValue, type);
+            var elseCoerced = Coerce(elseValue, type);
+            var code = $"{condition.ToOperand()} ? {thenCoerced.ToOperand()} : " + elseCoerced.ToOperand();
+            return new StiCrystalExpression(code, type)
+            {
+                IsCurrency = type == typeof(decimal) ? IsCurrency(thenCoerced) || IsCurrency(elseCoerced) : (bool?)null
+            };
         }
 
         /// <summary>
@@ -1102,7 +1122,11 @@ namespace Import.CrystalReports.Formulas
             if (type == typeof(long) && IsInteger(value.Type) && value.Type != typeof(ulong))
                 return value;
 
-            return new StiCrystalExpression($"({GetTypeName(type)}){value.ToOperand()}", type);
+            // A number made decimal stays a number, a value of an unknown type may be a currency
+            return new StiCrystalExpression($"({GetTypeName(type)}){value.ToOperand()}", type)
+            {
+                IsCurrency = value.Type == typeof(object) ? (bool?)null : false
+            };
         }
 
         private static string GetTypeName(Type type)

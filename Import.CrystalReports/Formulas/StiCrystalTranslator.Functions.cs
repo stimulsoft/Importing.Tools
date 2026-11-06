@@ -297,7 +297,7 @@ namespace Import.CrystalReports.Formulas
             if (value.Type == typeof(bool))
                 return new StiCrystalExpression($"{value.ToOperand()} ? \"True\" : \"False\"", typeof(string));
 
-            if (value.Type == typeof(decimal))
+            if (IsCurrency(value))
                 return Format("C2", value);
 
             if (IsNumber(value.Type))
@@ -1072,8 +1072,12 @@ namespace Import.CrystalReports.Formulas
             if (function == "Count")
                 return new StiCrystalExpression($"Count({band})", type, isAtomic: true);
 
+            // The summaries of Stimulsoft return decimal for any number; a summary of a currency stays a currency
             var separator = band.Length > 0 ? ", " : string.Empty;
-            return new StiCrystalExpression($"{function}({band}{separator}{args[0].Code})", type, isAtomic: true);
+            return new StiCrystalExpression($"{function}({band}{separator}{args[0].Code})", type, isAtomic: true)
+            {
+                IsCurrency = type == typeof(decimal) ? IsCurrency(args[0]) : (bool?)null
+            };
         }
 
         private string ResolveGroupBand(StiCrystalExpression condition, int position, string period = null)

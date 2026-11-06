@@ -59,6 +59,12 @@ namespace Import.CrystalReports.Formulas
         public string Literal { get; set; }
 
         /// <summary>
+        /// False for a decimal which is a number of Crystal, not a currency: a summary of a number field or a ratio
+        /// of two currencies. Null when it is not known, so a decimal stays a currency, as a currency field is.
+        /// </summary>
+        public bool? IsCurrency { get; set; }
+
+        /// <summary>
         /// The name of the variable of the dictionary: for a global variable it is the name to assign,
         /// for an assignment it is the assigned variable.
         /// </summary>
