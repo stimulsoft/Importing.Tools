@@ -1210,10 +1210,20 @@ namespace Import.CrystalReports
                     //value = ReplaceFieldsAndVariables(value.Replace("\r", "").Replace("\n", ""));
                     string stValue = value.Replace("\r\n", " ").Replace("\r", " ").Replace("\n", " ");
                     bool flag = true;
-                    if (htFieldNameConversion.ContainsKey(stValue))
+                    var isCount = formula.Operation == SummaryOperation.Count ||
+                        formula.Operation == SummaryOperation.DistinctCount;
+                    var fieldType = ConvertType(formula.SummarizedField.ValueType);
+                    var isNumber = fieldType == typeof(int) || fieldType == typeof(double) ||
+                        fieldType == typeof(decimal);
+                    if (htFieldNameConversion.ContainsKey(stValue) && (isCount || isNumber))
                     {
+                        // Sum of a text column failed the whole report with a FormatException on the start: G3195
+                        // counts the staff by Count of a text field
                         value = (string)htFieldNameConversion[stValue];
-                        value = "Totals.Sum(" + value.Substring(0, value.IndexOf('.')) + ", " + value + ")";
+                        var source = value.Substring(0, value.IndexOf('.'));
+                        value = isCount
+                            ? "(decimal)Totals.Count(" + source + ")"
+                            : "Totals.Sum(" + source + ", " + value + ")";
                     }
                     else
                     {
@@ -1227,7 +1237,7 @@ namespace Import.CrystalReports
                     variable.Alias = formulaName.Substring(1);
                     if (flag)
                     {
-                        //Totals.Sum returns decimal
+                        //Totals.Sum returns decimal, Totals.Count is cast to it
                         variable.Type = typeof(decimal);
                         variable.ReadOnly = true;
                         variable.InitBy = StiVariableInitBy.Expression;
@@ -2181,7 +2191,7 @@ namespace Import.CrystalReports
             //text.Text = ReplaceFieldsAndVariables(obj.Text.Replace("\n", ""));
             text.Text = RemoveSQLExpressionFields(ReplaceFieldsAndVariables(obj.Text));
             AddEmbeddedFieldsText(text);
-            text.Font = obj.Font;
+            text.Font = ConvertFont(obj.Font);
 
             ConvertProperties(text, obj);
 
@@ -2227,7 +2237,7 @@ namespace Import.CrystalReports
             {
                 StiText text = new StiText();
                 text.Border = ConvertBorder(obj.Border);
-                text.Font = obj.Font;
+                text.Font = ConvertFont(obj.Font);
 
                 ConvertProperties(text, obj);
 
@@ -2383,6 +2393,22 @@ namespace Import.CrystalReports
         #endregion
 
         #region Converters
+        /// <summary>
+        /// Crystal names some fonts with the style, like "Verdana,Bold". The comma of the name splits the saved font
+        /// of Stimulsoft, the style was read as the size, and the report didn't load at all (G3192, G3194, G3195).
+        /// The style is kept by the style of the font. The report saves the original name, which GDI+ keeps as it was
+        /// asked, while the name of the font is already resolved to Verdana.
+        /// </summary>
+        private static Font ConvertFont(Font font)
+        {
+            var name = font?.OriginalFontName ?? font?.Name;
+            var comma = name?.IndexOf(',') ?? -1;
+            if (comma <= 0)
+                return font;
+
+            return new Font(name.Substring(0, comma).Trim(), font.Size, font.Style, font.Unit, font.GdiCharSet);
+        }
+
         private static Type ConvertType(FieldValueType valueType)
         {
             switch (valueType)
