@@ -36,6 +36,18 @@ namespace Import.CrystalReports.Formulas
 {
     public partial class StiCrystalTranslator
     {
+        #region Consts.Dates
+        /// <summary>
+        /// The last Sunday or today, counted from the Sunday of 7 January 1900 without DayOfWeek, which the
+        /// interpretation mode can't cast; the groups by a week count it in the same way.
+        /// </summary>
+        private const string LastSunday = "Today.AddDays(-((Today - DateSerial(1900, 1, 7)).Days % 7))";
+
+        private const string MonthStart = "DateSerial(Today.Year, Today.Month, 1)";
+
+        private const string YearStart = "DateSerial(Today.Year, 1, 1)";
+        #endregion
+
         #region Methods
         /// <summary>
         /// Translates a call of a function of Crystal or a word without parentheses like CurrentDate or PageNumber.
@@ -390,6 +402,13 @@ namespace Import.CrystalReports.Formulas
         #region Methods.Dates
         private StiCrystalExpression TranslateDateFunction(string name, List<StiCrystalExpression> args, int position)
         {
+            if (args.Count == 0)
+            {
+                var range = TranslateDateRange(name);
+                if (range != null)
+                    return range;
+            }
+
             switch (name)
             {
                 case "currentdate":
@@ -673,6 +692,106 @@ namespace Import.CrystalReports.Formulas
 
             return TranslateDate(args);
         }
+
+        /// <summary>
+        /// The date ranges of Crystal, like Aged0To30Days or LastFullMonth, counted from the current date. The bounds
+        /// are included, as the bounds of a range parameter; a week runs from Sunday to Saturday. Without them
+        /// the formulas of the aging reports and the running totals over them failed (13 reports of the corpus,
+        /// G3172 and G3173 among them).
+        /// </summary>
+        private static StiCrystalExpression TranslateDateRange(string name)
+        {
+            switch (name)
+            {
+                case "alldatestotoday":
+                    return CreateDateRange(null, "Today");
+
+                case "alldatestoyesterday":
+                    return CreateDateRange(null, "Today.AddDays(-1)");
+
+                case "alldatesfromtoday":
+                    return CreateDateRange("Today", null);
+
+                case "alldatesfromtomorrow":
+                    return CreateDateRange("Today.AddDays(1)", null);
+
+                case "aged0to30days":
+                    return CreateDateRange("Today.AddDays(-30)", "Today");
+
+                case "aged31to60days":
+                    return CreateDateRange("Today.AddDays(-60)", "Today.AddDays(-31)");
+
+                case "aged61to90days":
+                    return CreateDateRange("Today.AddDays(-90)", "Today.AddDays(-61)");
+
+                case "over90days":
+                    return CreateDateRange(null, "Today.AddDays(-91)");
+
+                case "next30days":
+                    return CreateDateRange("Today", "Today.AddDays(30)");
+
+                case "next31to60days":
+                    return CreateDateRange("Today.AddDays(31)", "Today.AddDays(60)");
+
+                case "next61to90days":
+                    return CreateDateRange("Today.AddDays(61)", "Today.AddDays(90)");
+
+                case "next91to365days":
+                    return CreateDateRange("Today.AddDays(91)", "Today.AddDays(365)");
+
+                case "last7days":
+                    return CreateDateRange("Today.AddDays(-6)", "Today");
+
+                case "lastfullweek":
+                    return CreateDateRange($"{LastSunday}.AddDays(-7)", $"{LastSunday}.AddDays(-1)");
+
+                case "weektodatefromsun":
+                    return CreateDateRange(LastSunday, "Today");
+
+                case "lastfullmonth":
+                    return CreateDateRange($"{MonthStart}.AddMonths(-1)", $"{MonthStart}.AddDays(-1)");
+
+                case "monthtodate":
+                    return CreateDateRange(MonthStart, "Today");
+
+                case "yeartodate":
+                    return CreateDateRange(YearStart, "Today");
+
+                case "lastyearmtd":
+                    return CreateDateRange($"{MonthStart}.AddYears(-1)", "Today.AddYears(-1)");
+
+                case "lastyearytd":
+                    return CreateDateRange($"{YearStart}.AddYears(-1)", "Today.AddYears(-1)");
+
+                case "calendar1stqtr":
+                    return CreateDateRange(YearStart, "DateSerial(Today.Year, 3, 31)");
+
+                case "calendar2ndqtr":
+                    return CreateDateRange("DateSerial(Today.Year, 4, 1)", "DateSerial(Today.Year, 6, 30)");
+
+                case "calendar3rdqtr":
+                    return CreateDateRange("DateSerial(Today.Year, 7, 1)", "DateSerial(Today.Year, 9, 30)");
+
+                case "calendar4thqtr":
+                    return CreateDateRange("DateSerial(Today.Year, 10, 1)", "DateSerial(Today.Year, 12, 31)");
+
+                case "calendar1sthalf":
+                    return CreateDateRange(YearStart, "DateSerial(Today.Year, 6, 30)");
+
+                case "calendar2ndhalf":
+                    return CreateDateRange("DateSerial(Today.Year, 7, 1)", "DateSerial(Today.Year, 12, 31)");
+
+                default:
+                    return null;
+            }
+        }
+
+        private static StiCrystalExpression CreateDateRange(string from, string to)
+        {
+            var fromDate = from != null ? new StiCrystalExpression(from, typeof(DateTime), isAtomic: true) : null;
+            var toDate = to != null ? new StiCrystalExpression(to, typeof(DateTime), isAtomic: true) : null;
+            return StiCrystalExpression.CreateRange(fromDate, fromDate != null, toDate, toDate != null);
+        }
         #endregion
 
         #region Methods.Math
@@ -844,6 +963,9 @@ namespace Import.CrystalReports.Formulas
                 case "onfirstrecord":
                     return new StiCrystalExpression("LineThrough == 1", typeof(bool));
 
+                case "onlastrecord":
+                    return TranslateOnLastRecord();
+
                 case "currentfieldvalue":
                     if (args.Count == 0)
                     {
@@ -874,6 +996,19 @@ namespace Import.CrystalReports.Formulas
 
             var code = $"IsNull({reference.DataSourceName}, {ToCSharpString(reference.ColumnName)})";
             return new StiCrystalExpression(code, typeof(bool), isAtomic: true);
+        }
+
+        /// <summary>
+        /// OnLastRecord: the data band of the details stands on its last row. Count of the band takes the filter of
+        /// the records, Count of the source doesn't. Null, so the function stays unsupported, without such a band.
+        /// </summary>
+        private StiCrystalExpression TranslateOnLastRecord()
+        {
+            var band = resolver.ResolveMainDataBand();
+            if (band == null)
+                return null;
+
+            return new StiCrystalExpression($"{band}.Position == {band}.Count - 1", typeof(bool));
         }
 
         private static StiCrystalExpression TranslateNeighbour(string name, StiCrystalExpression value, int position)

@@ -54,6 +54,11 @@ namespace Import.CrystalReports.Formulas
         string ResolveGroupBand(string name, string period);
 
         /// <summary>
+        /// Returns the name of the data band of the details, for OnLastRecord. Returns null if the page has none.
+        /// </summary>
+        string ResolveMainDataBand();
+
+        /// <summary>
         /// Returns the variable of the dictionary for a global or shared variable of a formula; the same name gives
         /// the same variable in all the formulas of the report. Returns null if such variables are not supported.
         /// </summary>

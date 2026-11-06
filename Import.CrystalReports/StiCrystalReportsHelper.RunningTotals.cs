@@ -292,11 +292,67 @@ namespace Import.CrystalReports
                     condition = expression.Code;
                     return true;
 
+                case RunningTotalCondition.OnChangeOfField:
+                case RunningTotalCondition.OnChangeOfGroup:
+                    condition = GetChangeCondition(definition);
+                    if (condition == null)
+                    {
+                        warningList.Add(StiWarning.GetWarningFormula(name,
+                            $"The evaluation {definition.EvaluationConditionType} is not supported, " +
+                            "every row is taken"));
+                    }
+
+                    return true;
+
                 default:
                     warningList.Add(StiWarning.GetWarningFormula(name,
                         $"The evaluation {definition.EvaluationConditionType} is not supported, every row is taken"));
                     return true;
             }
+        }
+
+        /// <summary>
+        /// The evaluation on a change of a field or of a group: Crystal takes the first row of every value. The row
+        /// is the first one, or a field differs from the previous row; a group starts again with every new outer
+        /// group, so the fields of the outer groups are compared too. The values are compared as text, because
+        /// Previous gives the raw value of the column. Null if a field is not a column of the source of the data
+        /// band: Previous of another source doesn't move with the rows.
+        /// </summary>
+        private string GetChangeCondition(RunningTotalFieldDefinition definition)
+        {
+            List<string> fields;
+            if (definition.EvaluationConditionType == RunningTotalCondition.OnChangeOfField)
+            {
+                var field = (definition.EvaluationCondition as FieldDefinition)?.FormulaName?.Trim('{', '}');
+                fields = field != null ? new List<string> { field } : null;
+            }
+
+            else
+            {
+                var group = definition.EvaluationCondition as CrystalDecisions.CrystalReports.Engine.Group;
+                var field = group?.ConditionField?.FormulaName?.Trim('{', '}');
+                fields = field != null ? resolver.GetGroupFields(field, GetGroupPeriod(group)) : null;
+            }
+
+            var dataBand = formulaPage?.GetComponents().OfType<StiDataBand>().FirstOrDefault();
+            if (fields == null || dataBand == null)
+                return null;
+
+            var columns = new List<StiCrystalReference>();
+            foreach (var field in fields)
+            {
+                var reference = resolver.ResolveReference(field);
+                if (reference?.ColumnName == null || reference.DataSourceName != dataBand.DataSourceName)
+                    return null;
+
+                columns.Add(reference);
+            }
+
+            var first = columns[0];
+            var changes = columns.Select(c =>
+                $"(\"\" + Previous({c.DataSourceName}, \"{c.ColumnName}\") != \"\" + {c.Expression})");
+            return $"PreviousIsNull({first.DataSourceName}, \"{first.ColumnName}\") || " +
+                string.Join(" || ", changes);
         }
 
         /// <summary>

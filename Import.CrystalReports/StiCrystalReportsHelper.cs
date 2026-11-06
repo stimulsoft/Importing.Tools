@@ -30,6 +30,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Printing;
@@ -1376,6 +1377,7 @@ namespace Import.CrystalReports
             AddBands(page, crystalReport, mainDataSource, log);
             log.CloseNode();
 
+            resolver.MainDataBand = page.Components.OfType<StiDataBand>().FirstOrDefault()?.Name;
             ApplyPendingTranslations();
 
             #region Fill SummaryFields with GroupBands names

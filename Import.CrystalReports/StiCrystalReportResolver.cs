@@ -29,6 +29,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Import.CrystalReports.Formulas;
 
 namespace Import.CrystalReports
@@ -62,6 +63,11 @@ namespace Import.CrystalReports
             return groupBands.TryGetValue(name, out band) ? band : null;
         }
 
+        public string ResolveMainDataBand()
+        {
+            return MainDataBand;
+        }
+
         public StiCrystalReference ResolveVariable(string name, Type type)
         {
             return VariableResolving?.Invoke(name, type);
@@ -73,6 +79,7 @@ namespace Import.CrystalReports
             new Dictionary<string, StiCrystalReference>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> groupBands =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<KeyValuePair<string, string>> groups = new List<KeyValuePair<string, string>>();
         #endregion
 
         #region Properties
@@ -80,6 +87,12 @@ namespace Import.CrystalReports
         /// The value of the formatted object for the formulas of conditional formatting; null for other formulas.
         /// </summary>
         public StiCrystalReference CurrentFieldValue { get; set; }
+
+        /// <summary>
+        /// The name of the data band of the details. It is set after the bands are laid out: the band takes another
+        /// name when the details are split into sections.
+        /// </summary>
+        public string MainDataBand { get; set; }
 
         /// <summary>
         /// Creates or finds the variable of the dictionary for a global or shared variable of a formula.
@@ -123,9 +136,25 @@ namespace Import.CrystalReports
         public void AddGroupBand(string name, string band, string period)
         {
             groupBands[name] = band;
+            groups.Add(new KeyValuePair<string, string>(name, period));
 
             if (period != null)
                 groupBands[GetGroupKey(name, period)] = band;
+        }
+
+        /// <summary>
+        /// The fields of a group and of the groups outside it, from the outermost one, in the order the bands were
+        /// added; null if the group is unknown or a group of them has a period, so its value is not its field.
+        /// </summary>
+        public List<string> GetGroupFields(string name, string period)
+        {
+            var index = groups.FindIndex(g =>
+                string.Equals(g.Key, name, StringComparison.OrdinalIgnoreCase) && g.Value == period);
+            if (index < 0)
+                return null;
+
+            var outer = groups.Take(index + 1).ToList();
+            return outer.Any(g => g.Value != null) ? null : outer.Select(g => g.Key).ToList();
         }
 
         private static string GetGroupKey(string name, string period)
