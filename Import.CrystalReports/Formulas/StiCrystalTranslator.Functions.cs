@@ -48,6 +48,18 @@ namespace Import.CrystalReports.Formulas
         private const string YearStart = "DateSerial(Today.Year, 1, 1)";
         #endregion
 
+        #region Consts.Strings
+        /// <summary>
+        /// ToWords of Crystal writes 2 decimals when the number of decimals is not given.
+        /// </summary>
+        private const int DefaultWordsDecimals = 2;
+
+        /// <summary>
+        /// The denominator of the decimals of ToWords must stay an int.
+        /// </summary>
+        private const int MaxWordsDecimals = 9;
+        #endregion
+
         #region Methods
         /// <summary>
         /// Translates a call of a function of Crystal or a word without parentheses like CurrentDate or PageNumber.
@@ -197,17 +209,8 @@ namespace Import.CrystalReports.Formulas
 
                     break;
 
-                // ToWords(value, 0) writes the whole number; the variant with the decimals as "45 / 100" is not
-                // in Stimulsoft
                 case "towords":
-                    if (args.Count >= 1 && args.Count <= 2 && IsNumber(args[0].Type) &&
-                        (args.Count == 1 || args[1].Code == "0"))
-                    {
-                        return new StiCrystalExpression($"ToWords({Coerce(args[0], typeof(decimal)).Code}, false)",
-                            typeof(string), isAtomic: true);
-                    }
-
-                    break;
+                    return TranslateToWords(args);
 
                 case "strcmp":
                     return TranslateStrCmp(args);
@@ -369,6 +372,40 @@ namespace Import.CrystalReports.Formulas
             var code = $"({first} == {second} ? 0 : " +
                 $"(string.Compare({first}, {second}, StringComparison.Ordinal) < 0 ? -1 : 1))";
             return new StiCrystalExpression(code, typeof(int), isAtomic: true);
+        }
+
+        /// <summary>
+        /// ToWords writes the whole part in words and the decimals by digits, 2 decimals by default: ToWords(172.24)
+        /// is "one hundred seventy-two and 24 / 100". Crystal rounds the value away from zero first, pads the
+        /// decimals with zeros, writes an x for every digit when there are no decimals (172 is "... and xx / 100")
+        /// and gives only the words for 0 decimals. Formulas cut this tail by its length, for example
+        /// Left(ToWords(x), Length(ToWords(x)) - 13), so it must be the same; without it the words were cut. The
+        /// words of Stimulsoft differ a little, "one hundred and seventy-two", and end with a space.
+        /// </summary>
+        private static StiCrystalExpression TranslateToWords(List<StiCrystalExpression> args)
+        {
+            if (args.Count < 1 || args.Count > 2 || !IsNumber(args[0].Type))
+                return null;
+
+            var decimals = DefaultWordsDecimals;
+            if (args.Count == 2 &&
+                !int.TryParse(args[1].Code, NumberStyles.None, CultureInfo.InvariantCulture, out decimals))
+                return null;
+
+            if (decimals > MaxWordsDecimals)
+                return null;
+
+            var value = $"Round({Coerce(args[0], typeof(decimal)).Code}, {decimals}, MidpointRounding.AwayFromZero)";
+            if (decimals == 0)
+                return new StiCrystalExpression($"ToWords({value}, false).TrimEnd()", typeof(string), isAtomic: true);
+
+            var whole = $"Math.Truncate({value})";
+            var denominator = "1" + new string('0', decimals);
+            var digits = $"Format(\"{{0:{new string('0', decimals)}}}\", Abs({value} - {whole}) * {denominator})";
+            var code = $"(ToWords({whole}, false).TrimEnd() + \" and \" + " +
+                $"({value} == {whole} ? \"{new string('x', decimals)}\" : {digits}) + \" / {denominator}\")";
+
+            return new StiCrystalExpression(code, typeof(string), isAtomic: true);
         }
 
         private static StiCrystalExpression TranslateChr(List<StiCrystalExpression> args)

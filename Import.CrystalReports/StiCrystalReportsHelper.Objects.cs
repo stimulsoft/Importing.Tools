@@ -31,6 +31,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
@@ -40,14 +41,19 @@ using Ras = CrystalDecisions.ReportAppServer.ReportDefModel;
 namespace Import.CrystalReports
 {
     /// <summary>
-    /// The report objects which the engine of Crystal describes only partly: the pictures and the blob fields.
-    /// Their content is read through the object model of the RAS.
+    /// The report objects which the engine of Crystal describes only partly: the pictures, the blob fields and
+    /// the special fields inside the text objects. Their content is read through the object model of the RAS.
     /// </summary>
     public sealed partial class StiCrystalReportsHelper
     {
         #region Consts.Objects
         private static readonly Regex RenderedPicture = new Regex(
             "<div id=\"([^\"]+)\"[^>]*>\\s*<img [^>]*src=\"([^\"]+)\"", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Marks a special field in the text of a text object; a control character never comes in a report.
+        /// </summary>
+        private const char SpecialFieldMarker = (char)1;
         #endregion
 
         #region Fields.Objects
@@ -286,6 +292,88 @@ namespace Import.CrystalReports
             }
 
             return image;
+        }
+
+        /// <summary>
+        /// The engine of Crystal shows a special field inside a text object by its bare name: "PrintDate PrintTime"
+        /// was printed as it is. The paragraphs of RAS tell the special fields from the text, so the text is built
+        /// from them again, with a marker for every special field; the markers are replaced by the expressions after
+        /// the fields of the text are converted. Null when the text has no special fields, or when the paragraphs
+        /// don't give the text of the engine.
+        /// </summary>
+        private static string GetTextWithSpecialFields(TextObject obj, List<string> expressions)
+        {
+            var rasText = GetRasReportObject(obj) as Ras.ISCRTextObject;
+            var paragraphs = rasText?.Paragraphs;
+            if (paragraphs == null || paragraphs.Count == 0)
+                return null;
+
+            var engineText = new StringBuilder();
+            var result = new StringBuilder();
+            for (var index = 0; index < paragraphs.Count; index++)
+            {
+                if (index > 0)
+                {
+                    engineText.Append('\n');
+                    result.Append('\n');
+                }
+
+                foreach (Ras.ISCRParagraphElement element in paragraphs[index].ParagraphElements)
+                {
+                    var field = element as Ras.ISCRParagraphFieldElement;
+                    var value = field != null ? field.DataSource : (element as Ras.ISCRParagraphTextElement)?.Text;
+                    engineText.Append(value);
+
+                    var expression = field != null && !string.IsNullOrEmpty(value) && !value.StartsWith("{")
+                        ? GetSpecialFieldText(value, field.FieldFormat)
+                        : null;
+
+                    if (expression == null)
+                    {
+                        result.Append(value);
+                        continue;
+                    }
+
+                    result.Append(SpecialFieldMarker).Append(expressions.Count).Append(SpecialFieldMarker);
+                    expressions.Add(expression);
+                }
+            }
+
+            if (expressions.Count == 0 || engineText.ToString() != obj.Text?.Replace("\r", string.Empty))
+            {
+                expressions.Clear();
+                return null;
+            }
+
+            return obj.Text.Contains("\r\n") ? result.ToString().Replace("\n", "\r\n") : result.ToString();
+        }
+
+        private static string ReplaceSpecialFieldMarkers(string text, List<string> expressions)
+        {
+            for (var index = 0; index < expressions.Count; index++)
+            {
+                text = text.Replace($"{SpecialFieldMarker}{index}{SpecialFieldMarker}", expressions[index]);
+            }
+
+            return text;
+        }
+
+        /// <summary>
+        /// The text of a special field by the format of its paragraph element; null for an unknown special field.
+        /// </summary>
+        private static string GetSpecialFieldText(string name, Ras.FieldFormat format)
+        {
+            var isDefault = format?.CommonFormat == null || format.CommonFormat.EnableSystemDefault;
+            var date = GetSpecialDate(name);
+            if (date != null)
+                return GetDateText(date, GetDatePattern(format?.DateFormat, isDefault));
+
+            var time = GetSpecialTime(name);
+            if (time != null)
+                return GetDateText(time, GetTimePattern(format?.TimeFormat, isDefault));
+
+            var text = GetSpecialVarField(name, numericSecond: false);
+            return string.IsNullOrEmpty(text) ? null : text;
         }
         #endregion
     }

@@ -1574,9 +1574,11 @@ namespace Import.CrystalReports
                     }
 
                     //band.Enabled = !section.SectionFormat.EnableSuppress;
-                    ApplySectionSuppress(band, section, GetArea(crystalReport, section));
+                    var area = GetArea(crystalReport, section);
+                    ApplySectionSuppress(band, section, area);
 
 					page.Components.Add(band);
+                    ApplyAreaFormat(band, section, area);
 
                     log.OpenNode(band.Name);
 
@@ -1586,6 +1588,78 @@ namespace Import.CrystalReports
 				}
 			}
 		}
+
+        /// <summary>
+        /// Crystal keeps the options of a group on its areas, not on the sections: the area of a group header repeats
+        /// the header on every page, keeps the group together and starts a new page before the group, the area of a
+        /// group footer prints the footer at the bottom of the page and starts a new page after it. An area with
+        /// several sections becomes an empty master band with child bands, so the options of the group go to the
+        /// master band, the page break before to the first band and the page break after to the last one. The flags
+        /// of the other areas are the defaults of Crystal (NewPageBefore of the report header, PrintAtBottom of the
+        /// page footer) and are skipped. The band must already be on the page: a child band finds its master there.
+        /// </summary>
+        private static void ApplyAreaFormat(StiBand band, Section section, Area area)
+        {
+            if (area == null || area.Sections.Count == 0)
+                return;
+
+            var format = area.AreaFormat;
+            var master = (band as StiChildBand)?.GetMaster() ?? band;
+            var isFirst = area.Sections[0].Name == section.Name;
+            var isLast = area.Sections[area.Sections.Count - 1].Name == section.Name;
+
+            switch (area.Kind)
+            {
+                case AreaSectionKind.GroupHeader:
+                    var header = master as StiGroupHeaderBand;
+                    var groupFormat = format as GroupAreaFormat;
+                    if (header != null && groupFormat != null)
+                    {
+                        header.PrintOnAllPages |= groupFormat.EnableRepeatGroupHeader;
+                        header.KeepGroupTogether |= groupFormat.EnableKeepGroupTogether;
+                    }
+
+                    if (isFirst && format.EnableNewPageBefore)
+                        SetNewPageBefore(master);
+
+                    break;
+
+                case AreaSectionKind.GroupFooter:
+                case AreaSectionKind.ReportFooter:
+                    if (format.EnablePrintAtBottomOfPage)
+                    {
+                        SetPrintAtBottom(master);
+                        SetPrintAtBottom(band);
+                    }
+
+                    // The report footer starts a new page after it in almost every report, it is a default
+                    if (area.Kind == AreaSectionKind.GroupFooter && isLast && format.EnableNewPageAfter &&
+                        band is IStiPageBreak)
+                        ((IStiPageBreak)band).NewPageAfter = true;
+
+                    if (area.Kind == AreaSectionKind.ReportFooter && isFirst && format.EnableNewPageBefore)
+                        SetNewPageBefore(master);
+
+                    break;
+            }
+        }
+
+        private static void SetNewPageBefore(StiBand band)
+        {
+            var pageBreak = band as IStiPageBreak;
+            if (pageBreak == null)
+                return;
+
+            pageBreak.NewPageBefore = true;
+            pageBreak.SkipFirst = false;
+        }
+
+        private static void SetPrintAtBottom(StiBand band)
+        {
+            var printAtBottom = band as IStiPrintAtBottom;
+            if (printAtBottom != null)
+                printAtBottom.PrintAtBottom = true;
+        }
 
         /// <summary>
         /// RAS codes a section by its area, its group and its index in the area. The areas of the groups count
@@ -1795,7 +1869,8 @@ namespace Import.CrystalReports
                         }
                     case FieldKind.SpecialVarField:
                         {
-                            return GetSpecialVarField(obj);
+                            return GetSpecialVarField(obj.DataSource.FormulaName,
+                                obj.FieldFormat.TimeFormat.SecondFormat == SecondFormat.NumericSecond);
                         }
                     case FieldKind.SQLExpressionField:
                         {
@@ -1872,9 +1947,9 @@ namespace Import.CrystalReports
 		}
 
 
-		private static string GetSpecialVarField(FieldObject obj)
+		private static string GetSpecialVarField(string name, bool numericSecond)
 		{
-			switch(obj.DataSource.FormulaName)
+			switch(name)
 			{
 				case "PageNofM":
 				{
@@ -1915,7 +1990,7 @@ namespace Import.CrystalReports
 				}
 				case "DataTime":
 				{
-                    if (obj.FieldFormat.TimeFormat.SecondFormat == SecondFormat.NumericSecond)
+                    if (numericSecond)
                     {
                         return "{Format(\"{0:T}\", Time)}";
                     }
@@ -1930,7 +2005,7 @@ namespace Import.CrystalReports
                 }
                 case "PrintTime":
                 {
-                    if (obj.FieldFormat.TimeFormat.SecondFormat == SecondFormat.NumericSecond)
+                    if (numericSecond)
                     {
                         return "{Format(\"{0:T}\", Time)}";
                     }
@@ -1945,7 +2020,7 @@ namespace Import.CrystalReports
                 }
                 case "ModificationTime":
 				{
-                    if (obj.FieldFormat.TimeFormat.SecondFormat == SecondFormat.NumericSecond)
+                    if (numericSecond)
                     {
                         return "{Format(\"{0:T}\", ReportChanged)}";
                     }
@@ -2189,7 +2264,10 @@ namespace Import.CrystalReports
 
             text.Border = ConvertBorder(obj.Border);
             //text.Text = ReplaceFieldsAndVariables(obj.Text.Replace("\n", ""));
-            text.Text = RemoveSQLExpressionFields(ReplaceFieldsAndVariables(obj.Text));
+            var specialFields = new List<string>();
+            var source = GetTextWithSpecialFields(obj, specialFields) ?? obj.Text;
+            text.Text = ReplaceSpecialFieldMarkers(
+                RemoveSQLExpressionFields(ReplaceFieldsAndVariables(source)), specialFields);
             AddEmbeddedFieldsText(text);
             text.Font = ConvertFont(obj.Font);
 
@@ -2202,11 +2280,22 @@ namespace Import.CrystalReports
 
             //text.WordWrap = obj.ObjectFormat.EnableCanGrow;   //??? only in old versions?
             text.CanGrow = obj.ObjectFormat.EnableCanGrow;
-            text.WordWrap = true;
+            text.WordWrap = text.CanGrow || !IsSingleWord(text.Text.Value);
 
             text.Angle = GetTextRotationAngle(obj, "RasTextObject");
 
             return text;
+        }
+
+        /// <summary>
+        /// Crystal breaks a line only between the words, so the spaces around a single word don't wrap it. " : " in
+        /// a frame narrower than its spaces printed nothing with WordWrap: the colon went to the hidden second line.
+        /// A text with fields is not a single word, the values of the fields may have spaces.
+        /// </summary>
+        private static bool IsSingleWord(string value)
+        {
+            var word = value?.Trim();
+            return !string.IsNullOrEmpty(word) && word.IndexOf('{') < 0 && !word.Any(char.IsWhiteSpace);
         }
 
 

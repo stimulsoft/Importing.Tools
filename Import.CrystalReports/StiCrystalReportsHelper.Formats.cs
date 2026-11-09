@@ -28,6 +28,7 @@
 #endregion Copyright (C) 2003-2026 Stimulsoft
 
 using System;
+using System.Collections.Generic;
 using System.Text;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
@@ -314,6 +315,19 @@ namespace Import.CrystalReports
                 return;
             }
 
+            text.Text = GetDateText(date, parts);
+        }
+
+        /// <summary>
+        /// The text which formats a date by a pattern; a long month is formatted alone, in the nominative case.
+        /// </summary>
+        private static string GetDateText(string date, string pattern)
+        {
+            return GetDateText(date, StiCrystalDatePattern.SplitAtLongMonth(pattern) ?? new List<string> { pattern });
+        }
+
+        private static string GetDateText(string date, List<string> parts)
+        {
             var value = new StringBuilder();
             foreach (var part in parts)
             {
@@ -321,7 +335,7 @@ namespace Import.CrystalReports
                 value.Append($"{{Format(\"{{0:{escaped}}}\", {date})}}");
             }
 
-            text.Text = value.ToString();
+            return value.ToString();
         }
 
         private static bool IsDateGroupName(ReportObject obj)
@@ -347,6 +361,25 @@ namespace Import.CrystalReports
 
                 case "FileCreationDate":
                     return "ReportCreated";
+
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>
+        /// The expression of the time of a special field, null if the field is not a time.
+        /// </summary>
+        private static string GetSpecialTime(string name)
+        {
+            switch (name)
+            {
+                case "PrintTime":
+                case "DataTime":
+                    return "Time";
+
+                case "ModificationTime":
+                    return "ReportChanged";
 
                 default:
                     return null;
