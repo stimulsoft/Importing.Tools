@@ -580,6 +580,9 @@ namespace Import.CrystalReports.Formulas
                     RequireString(right, node);
                     return new StiCrystalExpression($"{left.ToOperand()}.StartsWith({right.Code})", typeof(bool));
 
+                case "like":
+                    return TranslateLike(left, right, node);
+
                 case "+":
                 case "-":
                     return TranslateAdditive(op, left, right, node);
@@ -613,6 +616,44 @@ namespace Import.CrystalReports.Formulas
             }
 
             throw new StiCrystalFormulaException($"The operator {op} is not supported", node.Position);
+        }
+
+        /// <summary>
+        /// Like with the wildcards of Crystal: a pattern with the asterisks only at its ends becomes StartsWith,
+        /// EndsWith, Contains or the equality (18 formulas of the corpus printed their text instead). A question mark
+        /// or an asterisk inside the pattern has no simple analog and stays unsupported.
+        /// </summary>
+        private static StiCrystalExpression TranslateLike(StiCrystalExpression left, StiCrystalExpression right,
+            StiCrystalNode node)
+        {
+            RequireString(left, node);
+
+            var patterns = right.IsArray ? right.Items : new List<StiCrystalExpression> { right };
+            var parts = new List<StiCrystalExpression>();
+            foreach (var pattern in patterns)
+            {
+                var text = pattern.Literal;
+                if (text == null)
+                    throw new StiCrystalFormulaException("Like needs a constant pattern", node.Position);
+
+                var core = text.Trim('*');
+                if (core.IndexOfAny(new[] { '*', '?' }) >= 0)
+                    throw new StiCrystalFormulaException("This pattern of Like is not supported", node.Position);
+
+                if (core.Length == 0)
+                    return new StiCrystalExpression("true", typeof(bool), isAtomic: true);
+
+                var literal = ToCSharpString(core);
+                var atStart = text.StartsWith("*");
+                var atEnd = text.EndsWith("*");
+                var code = atStart && atEnd ? $"{left.ToOperand()}.Contains({literal})"
+                    : atStart ? $"{left.ToOperand()}.EndsWith({literal})"
+                    : atEnd ? $"{left.ToOperand()}.StartsWith({literal})"
+                    : $"{left.ToOperand()} == {literal}";
+                parts.Add(new StiCrystalExpression(code, typeof(bool)));
+            }
+
+            return parts.Count == 1 ? parts[0] : JoinConditions(parts, " || ");
         }
 
         /// <summary>
@@ -691,10 +732,13 @@ namespace Import.CrystalReports.Formulas
                     $"{Coerce(left, type).ToOperand()} {csharpOp} {Coerce(right, type).ToOperand()}", typeof(bool));
             }
 
+            // Crystal orders the strings alphabetically, not by the codes: {Product.Size} > "a" kept "K1" in Crystal
+            // and dropped all the rows of G3033 by the ordinal comparison, where the capitals go first
             if (left.Type == typeof(string) && right.Type == typeof(string) && csharpOp != "==" && csharpOp != "!=")
             {
                 return new StiCrystalExpression(
-                    $"string.Compare({left.Code}, {right.Code}, StringComparison.Ordinal) {csharpOp} 0", typeof(bool));
+                    $"string.Compare({left.Code}, {right.Code}, StringComparison.CurrentCulture) {csharpOp} 0",
+                    typeof(bool));
             }
 
             if (left.Type != right.Type && left.Type != typeof(object) && right.Type != typeof(object))

@@ -2342,10 +2342,10 @@ namespace Import.CrystalReports
                 ApplyFieldFormat(text, obj);
                 ApplyNullValue(text, obj);
 
-                if (obj.DataSource.Kind == FieldKind.FormulaField)
+                if (obj.DataSource?.Kind == FieldKind.FormulaField)
                     AddFormulaFieldText(text, obj.DataSource.FormulaName.Trim('{', '}'));
 
-                if (obj.DataSource.Kind == FieldKind.RunningTotalField)
+                if (obj.DataSource?.Kind == FieldKind.RunningTotalField)
                     AddRunningTotalText(text, obj.DataSource.FormulaName.Trim('{', '}'));
 
                 component = text;

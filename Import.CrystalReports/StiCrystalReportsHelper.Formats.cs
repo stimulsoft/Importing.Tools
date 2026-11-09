@@ -117,7 +117,9 @@ namespace Import.CrystalReports
         /// </summary>
         private void ApplyNullValue(StiText text, FieldObject obj)
         {
-            if (obj.DataSource.Kind != FieldKind.DatabaseField || obj.DataSource.ValueType == FieldValueType.StringField)
+            // A field object may have no data source; the exception stopped the import of the whole page (G2018)
+            if (obj.DataSource == null || obj.DataSource.Kind != FieldKind.DatabaseField ||
+                obj.DataSource.ValueType == FieldValueType.StringField)
                 return;
 
             if (ConvertsNullsToDefault(mainDocument))
