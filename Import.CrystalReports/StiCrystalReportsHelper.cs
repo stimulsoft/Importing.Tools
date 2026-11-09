@@ -2239,6 +2239,7 @@ namespace Import.CrystalReports
             subReport.Brush = new StiSolidBrush(GetBackgroundColorFromBorder(obj.Border));
 
             ConvertProperties(subReport, obj);
+            ApplySubreportLinks(subReport, obj);
 
             return subReport;
         }

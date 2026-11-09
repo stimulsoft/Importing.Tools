@@ -35,6 +35,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
+using Import.CrystalReports.Formulas;
 using Stimulsoft.Report.Components;
 using Ras = CrystalDecisions.ReportAppServer.ReportDefModel;
 
@@ -271,6 +272,68 @@ namespace Import.CrystalReports
                         pictures[name] = File.ReadAllBytes(image);
                 }
             }
+        }
+
+        /// <summary>
+        /// Crystal fills the linked parameters of a subreport from the fields of the main report for every print:
+        /// {?Pm-Orders.Customer} gets {Orders.Customer}. The links were not imported, so the parameters stayed empty
+        /// and the filters of the subreport took no rows: the header of an invoice printed empty fields. A link
+        /// becomes a parameter of the subreport, which sets the variable of the parameter before the print.
+        /// </summary>
+        private void ApplySubreportLinks(StiSubReport subReport, ReportObject obj)
+        {
+            var links = (GetRasReportObject(obj) as Ras.ISCRSubreportObject)?.SubreportLinks;
+            if (links == null)
+                return;
+
+            foreach (Ras.ISCRSubreportLink link in links)
+            {
+                var parameterName = link.LinkedParameterName?.Trim('{', '}', '?');
+                var field = link.MainReportFieldName;
+                if (string.IsNullOrEmpty(parameterName) || string.IsNullOrEmpty(field))
+                    continue;
+
+                var variable = stimulReport.Dictionary.Variables[GetParameterVariableName(parameterName)];
+                if (variable == null)
+                    continue;
+
+                pendingTranslations.Add(() =>
+                {
+                    var expression = TranslateFormula(field, subReport.Name + "." + parameterName);
+                    var code = GetParameterCode(expression, variable.Type);
+                    if (code == null)
+                    {
+                        if (expression != null)
+                            warningList.Add(StiWarning.GetWarningFormula(subReport.Name + "." + parameterName,
+                                $"The link from {field} can't set a parameter of the type {variable.Type.Name}"));
+
+                        return;
+                    }
+
+                    subReport.Parameters.Add(new StiParameter
+                    {
+                        Name = variable.Name,
+                        Expression = code
+                    });
+                });
+            }
+        }
+
+        /// <summary>
+        /// The code which sets a variable of a parameter: a number parameter is double, a field may be decimal.
+        /// </summary>
+        private static string GetParameterCode(StiCrystalExpression expression, Type type)
+        {
+            if (expression == null)
+                return null;
+
+            if (expression.Type == type)
+                return expression.Code;
+
+            var isNumber = expression.Type == typeof(int) || expression.Type == typeof(decimal) ||
+                expression.Type == typeof(double) || expression.Type == typeof(long);
+
+            return isNumber && type == typeof(double) ? $"(double){expression.ToOperand()}" : null;
         }
 
         /// <summary>
