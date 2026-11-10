@@ -516,8 +516,7 @@ namespace Import.CrystalReports
                 !value.EndsWith("}") || value.LastIndexOf('{') != 0)
                 return;
 
-            var condition = string.Join(" || ",
-                fields.Select(f => $"IsNull({f.DataSourceName}, \"{f.ColumnName}\")"));
+            var condition = string.Join(" || ", fields.Select(f => f.GetIsNullCode()));
 
             text.Text = $"{{IIF({condition}, \"\", {value.Substring(1, value.Length - 2)})}}";
         }

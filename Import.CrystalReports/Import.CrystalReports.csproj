@@ -165,6 +165,7 @@
     <Compile Include="StiCrystalReportResolver.cs" />
     <Compile Include="StiCrystalChartGroup.cs" />
     <Compile Include="StiCrystalChartValue.cs" />
+    <Compile Include="StiCrystalTableLinks.cs" />
     <Compile Include="StiCrystalReportsHelper.Charts.cs" />
     <Compile Include="StiCrystalReportsHelper.Data.cs" />
     <Compile Include="StiCrystalReportsHelper.Formats.cs" />

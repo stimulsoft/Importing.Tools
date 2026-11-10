@@ -86,6 +86,23 @@ namespace Import.CrystalReports.Formulas
         public List<StiCrystalReference> NullFields { get; set; }
         #endregion
 
+        #region Methods
+        /// <summary>
+        /// The check of NULL of the column of a field. IsNull of a data source reads the current row of the source;
+        /// a column of a parent table is read through the relations, the source itself doesn't move with the band,
+        /// so such a column is checked by its path: StiNullValuesHelper.IsNull(this, "Orders.Customer.Name"). G2899
+        /// filtered by IsNull(Customer, "CustomerName") and printed nothing in the interpretation once Customer
+        /// became the parent of Orders.
+        /// </summary>
+        public string GetIsNullCode()
+        {
+            if (string.IsNullOrEmpty(Expression) || Expression == $"{DataSourceName}.{ColumnName}")
+                return $"IsNull({DataSourceName}, \"{ColumnName}\")";
+
+            return $"StiNullValuesHelper.IsNull(this, \"{Expression}\")";
+        }
+        #endregion
+
         public StiCrystalReference(string expression, Type type)
         {
             Expression = expression;

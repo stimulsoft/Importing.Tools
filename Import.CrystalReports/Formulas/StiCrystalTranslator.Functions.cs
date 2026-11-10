@@ -1040,8 +1040,7 @@ namespace Import.CrystalReports.Formulas
             if (reference == null || string.IsNullOrEmpty(reference.DataSourceName))
                 return new StiCrystalExpression("false", typeof(bool), isAtomic: true);
 
-            var code = $"IsNull({reference.DataSourceName}, {ToCSharpString(reference.ColumnName)})";
-            return new StiCrystalExpression(code, typeof(bool), isAtomic: true);
+            return new StiCrystalExpression(reference.GetIsNullCode(), typeof(bool), isAtomic: true);
         }
 
         /// <summary>

@@ -113,14 +113,22 @@ namespace Import.CrystalReports
         private static string internalVersion = StiReport.GetReportVersion();
 
         #region Utils
-        private void MakeTableNameRecursive(StiDataSource table, string baseName)
+        /// <summary>
+        /// The paths of the fields of a source and of its parents through the relations. With keepNamed a source
+        /// which already has its path keeps it: a table left out of the query must not give its path to the tables
+        /// of the main source.
+        /// </summary>
+        private void MakeTableNameRecursive(StiDataSource table, string baseName, bool keepNamed = false)
 		{
+            if (keepNamed && htDataSourceToNameWithRelation.ContainsKey(table))
+                return;
+
 			string currentName = baseName + ".";
 			htDataSourceToNameWithRelation[table] = currentName;
 			StiDataRelationsCollection drc = table.GetParentRelations();
 			foreach (StiDataRelation relation in drc)
 			{
-				MakeTableNameRecursive(relation.ParentSource, currentName + relation.Name);
+				MakeTableNameRecursive(relation.ParentSource, currentName + relation.Name, keepNamed);
 			}
 		}
 
@@ -1060,28 +1068,31 @@ namespace Import.CrystalReports
             #region DataRelations
             log.OpenNode("Data Relations");
             htDataSourceParent = new Hashtable();
+            var pageRelations = new List<StiDataRelation>();
             foreach (TableLink link in crystalReport.Database.Links)
             {
+                // The table of "one" is the parent, the link of Crystal may go from it (Customer -> Orders)
+                var sourceFields = link.SourceFields.Cast<DatabaseFieldDefinition>().Select(f => f.Name).ToList();
+                var destinationFields = link.DestinationFields.Cast<DatabaseFieldDefinition>()
+                    .Select(f => f.Name).ToList();
+                var sourceParent = StiCrystalTableLinks.IsSourceParent(link.SourceTable.Name, sourceFields,
+                    link.DestinationTable.Name, destinationFields);
+                var parentTable = sourceParent ? link.SourceTable : link.DestinationTable;
+                var childTable = sourceParent ? link.DestinationTable : link.SourceTable;
+
                 StiDataRelation relation = new StiDataRelation();
-                relation.Alias = string.Format("{0} to {1}", link.SourceTable.Name, link.DestinationTable.Name);
-                relation.ParentSource = (StiDataSource)htTableNameToDataSource[link.DestinationTable.Name];
-                relation.ParentColumns = new string[link.DestinationFields.Count];
-                for (int fieldIndex = 0; fieldIndex < link.DestinationFields.Count; fieldIndex++)
-                {
-                    relation.ParentColumns[fieldIndex] = link.DestinationFields[fieldIndex].Name;
-                }
-                relation.ChildSource = (StiDataSource)htTableNameToDataSource[link.SourceTable.Name];
-                relation.ChildColumns = new string[link.SourceFields.Count];
-                for (int fieldIndex = 0; fieldIndex < link.SourceFields.Count; fieldIndex++)
-                {
-                    relation.ChildColumns[fieldIndex] = link.SourceFields[fieldIndex].Name;
-                }
-                relation.Name = CreateRelationName(relation, link.DestinationTable.Name);
+                relation.Alias = string.Format("{0} to {1}", childTable.Name, parentTable.Name);
+                relation.ParentSource = (StiDataSource)htTableNameToDataSource[parentTable.Name];
+                relation.ParentColumns = (sourceParent ? sourceFields : destinationFields).ToArray();
+                relation.ChildSource = (StiDataSource)htTableNameToDataSource[childTable.Name];
+                relation.ChildColumns = (sourceParent ? destinationFields : sourceFields).ToArray();
+                relation.Name = CreateRelationName(relation, parentTable.Name);
                 relation.NameInSource = relation.Name;
                 stimulReport.Dictionary.Relations.Add(relation);
                 htDataSourceParent[relation.ParentSource] = relation.ParentSource;
+                pageRelations.Add(relation);
 
-                log.WriteNode("Data Relation: ", link.DestinationTable.Name);
+                log.WriteNode("Data Relation: ", parentTable.Name);
             }
             log.CloseNode();
             #endregion
@@ -1089,10 +1100,18 @@ namespace Import.CrystalReports
             #region Prepare table for convert relations
             mainDataSource = null;
             htDataSourceToNameWithRelation = new Hashtable();
+
+            // A table without used fields is not in the query of Crystal, the main source and the paths of the fields
+            // start from the last table which the report reads
+            var unusedSources = GetUnusedSources(crystalReport, pageRelations);
+            var usedParents = new HashSet<StiDataSource>(pageRelations
+                .Where(r => !unusedSources.Contains(r.ChildSource))
+                .Select(r => r.ParentSource));
+
             //foreach (StiDataSource dataSource in stimulReport.Dictionary.DataSources)
             foreach (StiDataSource dataSource in dataSourcesOnThisPage)
             {
-                if (!htDataSourceParent.ContainsKey(dataSource))
+                if (!usedParents.Contains(dataSource) && !unusedSources.Contains(dataSource))
                 {
                     if (mainDataSource == null)
                     {
@@ -1107,7 +1126,7 @@ namespace Import.CrystalReports
             foreach (StiDataSource dataSource in dataSourcesOnThisPage)
             {
                 if (!htDataSourceToNameWithRelation.ContainsKey(dataSource))
-                    MakeTableNameRecursive(dataSource, dataSource.Name);
+                    MakeTableNameRecursive(dataSource, dataSource.Name, keepNamed: true);
             }
 
             htFieldNameConversion = new Hashtable();
@@ -2231,7 +2250,7 @@ namespace Import.CrystalReports
             if (reference == null || string.IsNullOrEmpty(reference.DataSourceName))
                 return null;
 
-            return $"!IsNull({reference.DataSourceName}, \"{reference.ColumnName}\")";
+            return "!" + reference.GetIsNullCode();
         }
         #endregion
 

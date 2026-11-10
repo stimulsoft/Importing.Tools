@@ -91,6 +91,54 @@ namespace Import.CrystalReports
             return IsProvider(provider, SqlServerProviders);
         }
 
+        /// <summary>
+        /// The sources of the tables which Crystal leaves out of its query: a table whose fields the report doesn't
+        /// use and which links no used table to the others, so the parents and the children of such tables too.
+        /// G1082 links Customer, Orders and Orders_Detail and prints the 2191 orders; the import took Orders_Detail,
+        /// the last child, as the main source and printed 3684 rows of details. G1447 reads only a Command, its four
+        /// linked tables without fields are left out. The synthetic data of the checks has one row in every table but
+        /// the main one, so only the databases showed it. A report which uses no field keeps all the tables.
+        /// </summary>
+        private HashSet<StiDataSource> GetUnusedSources(ReportDocument report, List<StiDataRelation> relations)
+        {
+            var unused = new HashSet<StiDataSource>();
+            var used = new HashSet<StiDataSource>();
+            var sources = new List<StiDataSource>();
+            foreach (Table table in report.Database.Tables)
+            {
+                var source = htTableNameToDataSource[table.Name] as StiDataSource;
+                if (source == null)
+                    continue;
+
+                sources.Add(source);
+                if (table.Fields.Cast<DatabaseFieldDefinition>().Any(f => f.UseCount > 0))
+                    used.Add(source);
+            }
+
+            if (used.Count == 0)
+                return unused;
+
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                foreach (var source in sources)
+                {
+                    if (used.Contains(source) || unused.Contains(source))
+                        continue;
+
+                    // A parent of a table which stays in the query links it to the others and stays too
+                    if (relations.Any(r => r.ParentSource == source && !unused.Contains(r.ChildSource)))
+                        continue;
+
+                    unused.Add(source);
+                    changed = true;
+                }
+            }
+
+            return unused;
+        }
+
         private static bool IsProvider(string provider, string[] providers)
         {
             return provider != null && providers.Any(p => provider.StartsWith(p, StringComparison.OrdinalIgnoreCase));

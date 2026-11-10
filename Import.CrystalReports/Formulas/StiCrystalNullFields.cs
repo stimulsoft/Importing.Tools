@@ -270,7 +270,7 @@ namespace Import.CrystalReports.Formulas
                 return null;
 
             isGuarded = true;
-            var nulls = fields.Select(f => $"IsNull({f.DataSourceName}, \"{f.ColumnName}\")");
+            var nulls = fields.Select(f => f.GetIsNullCode());
             return $"!({string.Join(" || ", nulls)})";
         }
 
