@@ -1227,6 +1227,7 @@ namespace Import.CrystalReports
 
                     AddFormulaField(formulaName, formula.Text ?? string.Empty, variable, ConvertType(formula.ValueType),
                         GetNullsAsDefault(crystalReport, formula), IsBasicFormula(formula));
+                    formulaFields[formulaName].IsUnused = formula.UseCount == 0;
 
                     //htVariableConversion.Add(formulaName, ReplaceSymbols(formulaName));
                     htVariableConversion[formulaName] = formulaNameNormalized;

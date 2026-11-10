@@ -78,6 +78,11 @@ namespace Import.CrystalReports
         /// True if the formula is written in Basic syntax.
         /// </summary>
         public bool IsBasic { get; set; }
+
+        /// <summary>
+        /// True if the report uses the formula nowhere, Crystal's use count is 0.
+        /// </summary>
+        public bool IsUnused { get; set; }
         #endregion
 
         public StiCrystalFormulaField(string name, string text, StiVariable variable, Type declaredType)

@@ -467,7 +467,10 @@ namespace Import.CrystalReports.Formulas
         {
             var reference = resolver.ResolveReference(node.Text);
             if (reference == null)
-                throw new StiCrystalFormulaException($"Unknown reference {{{node.Text}}}", node.Position);
+                throw new StiCrystalFormulaException($"Unknown reference {{{node.Text}}}", node.Position)
+                {
+                    Reference = node.Text
+                };
 
             if (reference.Name == null)
                 reference.Name = node.Text;

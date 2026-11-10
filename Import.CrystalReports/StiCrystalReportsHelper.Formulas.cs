@@ -311,6 +311,11 @@ namespace Import.CrystalReports
                 var translator = new StiCrystalTranslator(resolver) { IsBasic = formula.IsBasic };
                 var declaredType = formula.DeclaredType == typeof(object) ? null : formula.DeclaredType;
                 var expression = translator.Translate(formula.Text, declaredType);
+
+                // An empty formula or one of comments only prints nothing in Crystal, its type is the string
+                if (expression == null && (declaredType == null || declaredType == typeof(string)))
+                    expression = new StiCrystalExpression("\"\"", typeof(string), isAtomic: true);
+
                 if (expression == null)
                     throw new StiCrystalFormulaException("The formula is empty");
 
@@ -352,13 +357,30 @@ namespace Import.CrystalReports
                 variable.InitBy = StiVariableInitBy.Value;
                 variable.Type = typeof(string);
                 variable.Value = formula.Text.Replace("\r", "").Replace("\n", " ");
-                warningList.Add(StiWarning.GetWarningFormula(formula.Name, e.Message));
+
+                // A formula which the report doesn't use is often left from a removed table or field: two thirds of
+                // the unknown references of the corpus were such formulas, their warnings hid the real ones
+                if (!formula.IsUnused)
+                    warningList.Add(StiWarning.GetWarningFormula(formula.Name, GetWarningMessage(e)));
             }
             finally
             {
                 formula.IsTranslating = false;
                 formula.IsTranslated = true;
             }
+        }
+
+        /// <summary>
+        /// The message of the warning about a formula. A reference to a formula which the import couldn't translate
+        /// is not unknown: the message names that formula, whose own warning tells the cause.
+        /// </summary>
+        private string GetWarningMessage(StiCrystalFormulaException e)
+        {
+            StiCrystalFormulaField formula;
+            if (e.Reference != null && formulaFields.TryGetValue(e.Reference, out formula) && formula.IsTranslated)
+                return $"Uses the formula {{{e.Reference}}}, which is not translated";
+
+            return e.Message;
         }
 
         /// <summary>
@@ -384,7 +406,7 @@ namespace Import.CrystalReports
             }
             catch (StiCrystalFormulaException e)
             {
-                warningList.Add(StiWarning.GetWarningFormula(place, e.Message));
+                warningList.Add(StiWarning.GetWarningFormula(place, GetWarningMessage(e)));
                 return null;
             }
             finally
@@ -828,7 +850,7 @@ namespace Import.CrystalReports
             }
             catch (StiCrystalFormulaException e)
             {
-                warningList.Add(StiWarning.GetWarningFormula(place, e.Message));
+                warningList.Add(StiWarning.GetWarningFormula(place, GetWarningMessage(e)));
             }
             finally
             {

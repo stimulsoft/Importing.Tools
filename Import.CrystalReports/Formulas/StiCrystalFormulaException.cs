@@ -41,6 +41,11 @@ namespace Import.CrystalReports.Formulas
         /// The position in the formula where the problem was found, or -1 if unknown.
         /// </summary>
         public int Position { get; }
+
+        /// <summary>
+        /// The name of the unknown field, formula or parameter if the problem is an unknown reference, otherwise null.
+        /// </summary>
+        public string Reference { get; set; }
         #endregion
 
         public StiCrystalFormulaException(string message, int position = -1) :
