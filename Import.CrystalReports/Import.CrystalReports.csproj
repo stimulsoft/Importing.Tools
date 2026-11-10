@@ -157,6 +157,9 @@
     <Compile Include="Formulas\StiCrystalParser.cs" />
     <Compile Include="Formulas\StiCrystalParser.Basic.cs" />
     <Compile Include="Formulas\StiCrystalBasicLowering.cs" />
+    <Compile Include="Formulas\StiCrystalParser.Functions.cs" />
+    <Compile Include="Formulas\StiCrystalCustomFunction.cs" />
+    <Compile Include="Formulas\StiCrystalFunctionInliner.cs" />
     <Compile Include="Formulas\StiCrystalReference.cs" />
     <Compile Include="Formulas\StiCrystalToken.cs" />
     <Compile Include="Formulas\StiCrystalTranslator.cs" />

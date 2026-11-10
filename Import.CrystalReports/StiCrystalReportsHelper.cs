@@ -479,6 +479,7 @@ namespace Import.CrystalReports
         private void AddPage(StiPage page, ReportDocument crystalReport, bool isSubReport, IStiTreeLog log)
         {
             InitFormulas(page);
+            AddCustomFunctions(isSubReport ? mainDocument : crystalReport);
             InitCharts();
 
             #region Page Parameters

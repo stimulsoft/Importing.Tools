@@ -63,5 +63,10 @@ namespace Import.CrystalReports.Formulas
         /// the same variable in all the formulas of the report. Returns null if such variables are not supported.
         /// </summary>
         StiCrystalReference ResolveVariable(string name, System.Type type);
+
+        /// <summary>
+        /// Returns the custom function of the report by its name. Returns null if the function is unknown.
+        /// </summary>
+        StiCrystalCustomFunction ResolveFunction(string name);
     }
 }

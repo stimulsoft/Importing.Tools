@@ -72,6 +72,12 @@ namespace Import.CrystalReports
         {
             return VariableResolving?.Invoke(name, type);
         }
+
+        public StiCrystalCustomFunction ResolveFunction(string name)
+        {
+            StiCrystalCustomFunction function;
+            return functions.TryGetValue(name, out function) ? function : null;
+        }
         #endregion
 
         #region Fields
@@ -80,6 +86,8 @@ namespace Import.CrystalReports
         private readonly Dictionary<string, string> groupBands =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly List<KeyValuePair<string, string>> groups = new List<KeyValuePair<string, string>>();
+        private readonly Dictionary<string, StiCrystalCustomFunction> functions =
+            new Dictionary<string, StiCrystalCustomFunction>(StringComparer.OrdinalIgnoreCase);
         #endregion
 
         #region Properties
@@ -116,6 +124,11 @@ namespace Import.CrystalReports
         {
             reference.Name = name;
             references[name] = reference;
+        }
+
+        public void AddFunction(StiCrystalCustomFunction function)
+        {
+            functions[function.Name] = function;
         }
 
         public StiCrystalReference GetReference(string name)

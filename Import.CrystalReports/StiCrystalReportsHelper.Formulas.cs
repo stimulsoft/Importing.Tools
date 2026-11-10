@@ -32,6 +32,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
@@ -76,6 +77,7 @@ namespace Import.CrystalReports
         private Dictionary<string, string> specifiedGroupNames;
         private Dictionary<string, StiCrystalReference> globalVariables;
         private StiPage formulaPage;
+        private List<StiCrystalCustomFunction> customFunctions;
         #endregion
 
         #region Methods.Formulas
@@ -96,6 +98,63 @@ namespace Import.CrystalReports
             formulaTexts = new Dictionary<StiText, string>();
             suppressedBands = new List<StiBand>();
             specifiedGroupNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// The custom functions of the report, which the subreports use too. A function in Basic syntax or one
+        /// which can't be parsed stays unknown, its calls are not translated.
+        /// </summary>
+        private void AddCustomFunctions(ReportDocument report)
+        {
+            if (customFunctions == null)
+                customFunctions = ReadCustomFunctions(report);
+
+            foreach (var function in customFunctions)
+            {
+                resolver.AddFunction(function);
+            }
+        }
+
+        private List<StiCrystalCustomFunction> ReadCustomFunctions(ReportDocument report)
+        {
+            var functions = new List<StiCrystalCustomFunction>();
+            RasData.CustomFunctions rasFunctions;
+            try
+            {
+                // Through the members by name: the types of the client document and of its controllers are in
+                // the assemblies which the import doesn't reference
+                const BindingFlags getProperty = BindingFlags.GetProperty | BindingFlags.Public | BindingFlags.Instance;
+                var document = report.GetType().InvokeMember("ReportClientDocument", getProperty, null, report, null);
+                var controller = document.GetType().InvokeMember("CustomFunctionController", getProperty, null,
+                    document, null);
+                rasFunctions = controller.GetType().InvokeMember("GetCustomFunctions", BindingFlags.InvokeMethod, null,
+                    controller, null) as RasData.CustomFunctions;
+            }
+            catch (Exception)
+            {
+                return functions;
+            }
+
+            if (rasFunctions == null)
+                return functions;
+
+            for (var index = 0; index < rasFunctions.Count; index++)
+            {
+                var function = rasFunctions[index];
+                if (function.Syntax == RasData.CrFormulaSyntaxEnum.crFormulaSyntaxBasic)
+                    continue;
+
+                try
+                {
+                    functions.Add(StiCrystalParser.ParseFunction(function.Name, function.Text));
+                }
+                catch (StiCrystalFormulaException e)
+                {
+                    warningList.Add(StiWarning.GetWarningFormula(function.Name, e.Message));
+                }
+            }
+
+            return functions;
         }
 
         /// <summary>
@@ -721,7 +780,7 @@ namespace Import.CrystalReports
             resolver.CurrentFieldValue = GetInlineFieldValue(currentFieldValue);
             try
             {
-                var node = StiCrystalParser.Parse(formula);
+                var node = StiCrystalFunctionInliner.Inline(StiCrystalParser.Parse(formula), resolver);
                 var translator = new StiCrystalTranslator(resolver);
                 if (kind == FormatUnderline || kind == FormatStrikeout)
                 {

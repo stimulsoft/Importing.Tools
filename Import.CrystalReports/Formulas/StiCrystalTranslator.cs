@@ -111,6 +111,7 @@ namespace Import.CrystalReports.Formulas
         /// </summary>
         public StiCrystalExpression Translate(StiCrystalNode node)
         {
+            node = StiCrystalFunctionInliner.Inline(node, resolver);
             HasSummaries = false;
             assignmentCount = 0;
             variables = new Dictionary<string, StiCrystalExpression>(StringComparer.OrdinalIgnoreCase);
