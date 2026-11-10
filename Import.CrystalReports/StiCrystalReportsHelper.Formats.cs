@@ -100,10 +100,14 @@ namespace Import.CrystalReports
                     break;
 
                 // The group name of a group by a date is a string for RAS, but Crystal prints the start of the
-                // period by the date format of the field: lut-2025 for "monthly" and MMM-yyyy
+                // period by the date format of the field: lut-2025 for "monthly" and MMM-yyyy. The group name of
+                // a number is printed by the number format: 1,00, not 1 (G2120, BILL.PAT_ID)
                 case RasData.CrFieldValueTypeEnum.crFieldValueTypeStringField:
                     if (IsDateGroupName(obj))
                         text.TextFormat = new StiDateFormatService(GetDatePattern(format.DateFormat, isDefault), "");
+
+                    else if (IsNumberGroupName(obj))
+                        ApplyNumberFormat(text, format.NumericFormat, isDefault, isCurrencyField: false);
 
                     break;
             }
@@ -345,6 +349,17 @@ namespace Import.CrystalReports
             var field = obj as FieldObject;
             return field?.DataSource.Kind == FieldKind.GroupNameField &&
                 GetGroupNameCondition(field.DataSource.FormulaName) != null;
+        }
+
+        private static bool IsNumberGroupName(ReportObject obj)
+        {
+            var groupName = (obj as FieldObject)?.DataSource as GroupNameFieldDefinition;
+            var valueType = groupName?.Group?.ConditionField?.ValueType;
+            if (valueType == null)
+                return false;
+
+            var type = ConvertType(valueType.Value);
+            return type == typeof(int) || type == typeof(double) || type == typeof(decimal);
         }
 
         /// <summary>

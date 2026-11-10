@@ -263,9 +263,21 @@ namespace Import.CrystalReports
             var group = report.DataDefinition.Groups[index];
             band.SortDirection = GetGroupSortDirection(report, group);
 
-            var options = (GetRasObject(group, "RasGroup") as RasData.ISCRGroup)?.Options as RasData.DateGroupOptions;
+            var groupOptions = (GetRasObject(group, "RasGroup") as RasData.ISCRGroup)?.Options;
+            var options = groupOptions as RasData.DateGroupOptions;
             var condition = band.Condition.Value;
-            if (options == null || condition == null || !condition.StartsWith("{") || !condition.EndsWith("}"))
+            if (condition == null || !condition.StartsWith("{") || !condition.EndsWith("}"))
+                return;
+
+            var specified = groupOptions as RasData.SpecifiedGroupOptions;
+            if (specified != null)
+            {
+                ApplySpecifiedOrder(band, specified, condition.Substring(1, condition.Length - 2),
+                    group.ConditionField?.FormulaName?.Trim('{', '}'));
+                return;
+            }
+
+            if (options == null)
                 return;
 
             var date = condition.Substring(1, condition.Length - 2);
@@ -278,6 +290,65 @@ namespace Import.CrystalReports
             }
 
             band.Condition.Value = "{" + period + "}";
+        }
+
+        /// <summary>
+        /// A group in a specified order: every named group has a condition, a formula of Crystal, and the other
+        /// values are merged into one group, kept in their own groups or discarded. The condition of the band numbers
+        /// the named groups, so they keep their order and the others go last; GroupName prints the names. G0678,
+        /// G2591 and others printed the values of the field instead of "Less than 30 days", "0..7" and "Others".
+        /// </summary>
+        private void ApplySpecifiedOrder(StiGroupHeaderBand band, RasData.SpecifiedGroupOptions options,
+            string value, string field)
+        {
+            var conditions = new List<string>();
+            var names = new List<string>();
+            foreach (RasData.ISCRFilter filter in options.SpecifiedValueFilters)
+            {
+                var expression = TranslateFormula(filter.FreeEditingText, band.Name);
+                if (expression == null)
+                    return;
+
+                if (expression.Type != typeof(bool))
+                {
+                    warningList.Add(StiWarning.GetWarningFormula(band.Name,
+                        $"The condition of the group '{filter.Name}' is not boolean"));
+                    return;
+                }
+
+                conditions.Add(expression.Code);
+                names.Add(filter.Name);
+            }
+
+            var unspecified = options.UnspecifiedValuesType;
+            var others = unspecified == RasData.CrUnspecifiedValuesTypeEnum.crUnspecifiedValuesTypeSeparateValues;
+            if (unspecified == RasData.CrUnspecifiedValuesTypeEnum.crUnspecifiedValuesTypeDiscardValues)
+            {
+                warningList.Add(StiWarning.GetWarningFormula(band.Name,
+                    "The values out of the specified groups are not discarded, they make one group"));
+            }
+
+            // The interpretation mode doesn't concatenate a string with a number, ToString works in both modes
+            var key = others ? $"\"999\" + ({value}).ToString()" : "\"999\"";
+            var name = others ? $"({value}).ToString()" : ToStringLiteral(options.UnspecifiedValuesName ?? string.Empty);
+            for (var index = conditions.Count - 1; index >= 0; index--)
+            {
+                var number = index.ToString("D3", CultureInfo.InvariantCulture);
+                // The parser of the interpretation needs the parentheses around a nested conditional
+                key = $"({conditions[index]}) ? \"{number}\" : ({key})";
+                name = $"({conditions[index]}) ? {ToStringLiteral(names[index])} : ({name})";
+            }
+
+            band.Condition.Value = "{" + key + "}";
+            band.SortDirection = StiGroupSortDirection.Ascending;
+
+            if (field != null)
+                specifiedGroupNames[field] = name;
+        }
+
+        private static string ToStringLiteral(string text)
+        {
+            return "\"" + text.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
         }
 
         private static StiGroupSortDirection GetGroupSortDirection(ReportDocument report,

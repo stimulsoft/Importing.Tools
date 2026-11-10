@@ -1925,8 +1925,14 @@ namespace Import.CrystalReports
                 field = formula;
             }
 
-            // Crystal prints the start of the period of a group by a date, the value of its group condition
-            var name = (string)htFieldNameConversion[field];
+            // Crystal prints the start of the period of a group by a date, the value of its group condition. A group
+            // by a formula has its variable as the condition, as the group header takes it; the name printed nothing
+            // in 63 reports (GroupName ({@SortKey}))
+            string specifiedName;
+            if (specifiedGroupNames.TryGetValue(field, out specifiedName))
+                return "{" + specifiedName + "}";
+
+            var name = (string)htFieldNameConversion[field] ?? (string)htVariableConversion[field];
             var condition = GetGroupNameCondition(obj.DataSource.FormulaName);
             var period = condition != null && name != null ? GetDatePeriod(name, condition.Value) : null;
             return "{" + (period ?? name) + "}";

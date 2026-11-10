@@ -66,6 +66,7 @@ namespace Import.CrystalReports
         private List<Action> pendingTranslations;
         private Dictionary<StiText, string> formulaTexts;
         private List<StiBand> suppressedBands;
+        private Dictionary<string, string> specifiedGroupNames;
         private Dictionary<string, StiCrystalReference> globalVariables;
         private StiPage formulaPage;
         #endregion
@@ -87,6 +88,7 @@ namespace Import.CrystalReports
             pendingTranslations = new List<Action>();
             formulaTexts = new Dictionary<StiText, string>();
             suppressedBands = new List<StiBand>();
+            specifiedGroupNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
 
         /// <summary>

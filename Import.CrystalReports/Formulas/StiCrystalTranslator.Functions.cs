@@ -673,6 +673,15 @@ namespace Import.CrystalReports.Formulas
             if (args[0].Type == typeof(string))
                 return Call("StrToDateTime", typeof(DateTime), args[0]);
 
+            // A number is the count of the days from 30 December 1899, like an OLE date: DateValue(2) is
+            // 1 January 1900, the "no date" of G1026 and G1027, whose formulas of lateness failed with all the
+            // summaries over them
+            if (IsNumber(args[0].Type))
+            {
+                return new StiCrystalExpression($"DateSerial(1899, 12, 30).AddDays((double){args[0].ToOperand()})",
+                    typeof(DateTime), isAtomic: true);
+            }
+
             return null;
         }
 
