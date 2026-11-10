@@ -32,6 +32,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
+using System.Text.RegularExpressions;
 using CrystalDecisions.CrystalReports.Engine;
 using CrystalDecisions.Shared;
 using Import.CrystalReports.Formulas;
@@ -58,6 +59,12 @@ namespace Import.CrystalReports
         private const string FormatSize = "FontSize";
         private const string FormatUnderline = "Underline";
         private const string FormatStrikeout = "Strikeout";
+        #endregion
+
+        #region Consts.Summaries
+        private static readonly Regex SummaryWithoutArguments = new Regex(
+            @"(?<![\w.])(Sum|Count|Avg|Min|Max|Median|Mode|CountDistinct|StDev|StDevP)\w*\(\s*\)",
+            RegexOptions.Compiled);
         #endregion
 
         #region Fields.Formulas
@@ -96,13 +103,31 @@ namespace Import.CrystalReports
         /// the variable checks its value, so the declared type is set together with the translated expression.
         /// </summary>
         private void AddFormulaField(string name, string text, StiVariable variable, Type declaredType,
-            bool nullsAsDefault)
+            bool nullsAsDefault, bool isBasic)
         {
             formulaFields[name] = new StiCrystalFormulaField(name, text, variable, declaredType)
             {
-                NullsAsDefault = nullsAsDefault
+                NullsAsDefault = nullsAsDefault,
+                IsBasic = isBasic
             };
             resolver.AddReference(name, new StiCrystalReference(variable.Name, declaredType));
+        }
+
+        /// <summary>
+        /// True for a formula in Basic syntax: Formula = ..., If ... End If, Dim. The text of such a formula was
+        /// parsed as Crystal syntax and failed: 373 formulas in 37 reports of the corpus, G0318 among them.
+        /// </summary>
+        private static bool IsBasicFormula(FormulaFieldDefinition formula)
+        {
+            try
+            {
+                var rasFormula = GetRasObject(formula, "RasFormulaField") as RasData.ISCRFormulaField;
+                return rasFormula?.Syntax == RasData.CrFormulaSyntaxEnum.crFormulaSyntaxBasic;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         /// <summary>
@@ -224,7 +249,7 @@ namespace Import.CrystalReports
             var reference = resolver.GetReference(formula.Name);
             try
             {
-                var translator = new StiCrystalTranslator(resolver);
+                var translator = new StiCrystalTranslator(resolver) { IsBasic = formula.IsBasic };
                 var declaredType = formula.DeclaredType == typeof(object) ? null : formula.DeclaredType;
                 var expression = translator.Translate(formula.Text, declaredType);
                 if (expression == null)
@@ -259,7 +284,8 @@ namespace Import.CrystalReports
                 }
 
                 if (!formula.NullsAsDefault)
-                    reference.NullFields = StiCrystalNullFields.Collect(StiCrystalParser.Parse(formula.Text), resolver);
+                    reference.NullFields = StiCrystalNullFields.Collect(
+                        StiCrystalParser.Parse(formula.Text, formula.IsBasic), resolver);
             }
             catch (StiCrystalFormulaException e)
             {
@@ -289,10 +315,11 @@ namespace Import.CrystalReports
             resolver.CurrentFieldValue = GetInlineFieldValue(currentFieldValue);
             try
             {
-                var expression = new StiCrystalTranslator(resolver).Translate(text);
+                var translator = new StiCrystalTranslator(resolver);
+                var expression = translator.Translate(text);
 
                 if (expression != null)
-                    CheckNotRunning(expression);
+                    CheckOutsideText(translator, expression);
 
                 return expression;
             }
@@ -331,12 +358,18 @@ namespace Import.CrystalReports
         }
 
         /// <summary>
-        /// A running function works only in a text: a condition or a filter with it would not be calculated.
+        /// A running function works only in a text: a condition or a filter with it would not be calculated. A summary
+        /// of a band works in a condition too (G0448 suppresses its groups by Sum(GroupHeaderBand1, ...) = 0), but
+        /// a summary without arguments, Count() of the whole report, is not known to the compiled code of
+        /// a condition: the suppression of the sections of G0318 failed the compilation of the report.
         /// </summary>
-        private static void CheckNotRunning(StiCrystalExpression expression)
+        private static void CheckOutsideText(StiCrystalTranslator translator, StiCrystalExpression expression)
         {
             if (IsRunningExpression(expression.Code))
                 throw new StiCrystalFormulaException("A running total can be used only in the text of a field");
+
+            if (translator.HasSummaries && SummaryWithoutArguments.IsMatch(expression.Code))
+                throw new StiCrystalFormulaException("A summary of the whole report can be used only in a text");
         }
 
         /// <summary>
@@ -696,7 +729,7 @@ namespace Import.CrystalReports
                     if (expression == null || expression.Type != typeof(bool))
                         throw new StiCrystalFormulaException("The formula is not boolean");
 
-                    CheckNotRunning(expression);
+                    CheckOutsideText(translator, expression);
 
                     var style = kind == FormatUnderline ? FontStyle.Underline : FontStyle.Strikeout;
                     text.Conditions.Add(new StiCondition
@@ -728,7 +761,7 @@ namespace Import.CrystalReports
                     if (expression == null || expression.Code == "false")
                         continue;
 
-                    CheckNotRunning(expression);
+                    CheckOutsideText(translator, expression);
                     condition.Item = StiFilterItem.Expression;
                     condition.Expression = expression.Code;
                     text.Conditions.Add(condition);

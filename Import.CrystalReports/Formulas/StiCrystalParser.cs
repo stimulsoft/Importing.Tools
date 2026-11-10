@@ -38,7 +38,7 @@ namespace Import.CrystalReports.Formulas
     /// from the highest to the lowest: negation, ^, * / %, \, mod, + - &amp;, ranges, comparisons and in, like,
     /// startswith, not, and, or, xor, eqv, imp. If, Select and the assignment have the lowest precedence.
     /// </summary>
-    public class StiCrystalParser
+    public partial class StiCrystalParser
     {
         #region Consts
         private static readonly string[] Scopes = { "local", "global", "shared" };
@@ -76,6 +76,9 @@ namespace Import.CrystalReports.Formulas
         /// </summary>
         public static StiCrystalNode Parse(string formula)
         {
+            if (LooksLikeBasic(formula))
+                return ParseBasic(formula);
+
             var parser = new StiCrystalParser(new StiCrystalLexer(formula).Tokenize());
             var node = parser.ParseSequence();
             if (parser.Current.Type != StiCrystalTokenType.End)

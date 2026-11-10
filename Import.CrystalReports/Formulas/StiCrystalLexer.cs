@@ -27,13 +27,15 @@
 */
 #endregion Copyright (C) 2003-2026 Stimulsoft
 
+using System;
 using System.Collections.Generic;
 using System.Text;
 
 namespace Import.CrystalReports.Formulas
 {
     /// <summary>
-    /// Splits the text of a formula in Crystal syntax into tokens.
+    /// Splits the text of a formula into tokens. In Basic syntax the end of a line ends a statement unless the line
+    /// ends with " _", an apostrophe or Rem starts a comment and a string is only in double quotes.
     /// </summary>
     public class StiCrystalLexer
     {
@@ -48,6 +50,7 @@ namespace Import.CrystalReports.Formulas
 
         #region Fields
         private readonly string text;
+        private readonly bool isBasic;
         private int position;
         #endregion
 
@@ -65,6 +68,13 @@ namespace Import.CrystalReports.Formulas
                     return tokens;
                 }
 
+                if (isBasic && (text[position] == '\r' || text[position] == '\n'))
+                {
+                    tokens.Add(new StiCrystalToken(StiCrystalTokenType.NewLine, "\n", position));
+                    position++;
+                    continue;
+                }
+
                 tokens.Add(ReadToken());
             }
         }
@@ -74,7 +84,25 @@ namespace Import.CrystalReports.Formulas
             while (position < text.Length)
             {
                 var ch = text[position];
-                if (char.IsWhiteSpace(ch))
+                if (isBasic && (ch == '\r' || ch == '\n'))
+                {
+                    return;
+                }
+                else if (isBasic && IsBasicComment())
+                {
+                    SkipToEndOfLine();
+                }
+                else if (isBasic && IsLineContinuation())
+                {
+                    position++;
+                    SkipToEndOfLine();
+                    if (position < text.Length && text[position] == '\r')
+                        position++;
+
+                    if (position < text.Length && text[position] == '\n')
+                        position++;
+                }
+                else if (char.IsWhiteSpace(ch))
                 {
                     position++;
                 }
@@ -92,6 +120,48 @@ namespace Import.CrystalReports.Formulas
             }
         }
 
+        /// <summary>
+        /// An apostrophe or the word Rem at the start of a statement starts a comment of Basic.
+        /// </summary>
+        private bool IsBasicComment()
+        {
+            if (text[position] == '\'')
+                return true;
+
+            if (position + 3 > text.Length ||
+                string.Compare(text, position, "rem", 0, 3, StringComparison.OrdinalIgnoreCase) != 0)
+                return false;
+
+            var before = position == 0 ? '\n' : text[position - 1];
+            var after = position + 3 < text.Length ? text[position + 3] : '\n';
+            return (char.IsWhiteSpace(before) || before == ':') && char.IsWhiteSpace(after);
+        }
+
+        /// <summary>
+        /// " _" at the end of a line continues the statement on the next line.
+        /// </summary>
+        private bool IsLineContinuation()
+        {
+            if (text[position] != '_' || position > 0 && !char.IsWhiteSpace(text[position - 1]))
+                return false;
+
+            var next = position + 1;
+            while (next < text.Length && (text[next] == ' ' || text[next] == '\t'))
+            {
+                next++;
+            }
+
+            return next >= text.Length || text[next] == '\r' || text[next] == '\n';
+        }
+
+        private void SkipToEndOfLine()
+        {
+            while (position < text.Length && text[position] != '\r' && text[position] != '\n')
+            {
+                position++;
+            }
+        }
+
         private StiCrystalToken ReadToken()
         {
             var start = position;
@@ -106,7 +176,12 @@ namespace Import.CrystalReports.Formulas
             switch (ch)
             {
                 case '"':
+                    return ReadString(ch);
+
                 case '\'':
+                    if (isBasic)
+                        break;
+
                     return ReadString(ch);
 
                 case '{':
@@ -238,9 +313,10 @@ namespace Import.CrystalReports.Formulas
         }
         #endregion
 
-        public StiCrystalLexer(string text)
+        public StiCrystalLexer(string text, bool isBasic = false)
         {
             this.text = text ?? string.Empty;
+            this.isBasic = isBasic;
         }
     }
 }

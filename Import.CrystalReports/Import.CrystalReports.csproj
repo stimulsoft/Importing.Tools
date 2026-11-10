@@ -155,10 +155,13 @@
     <Compile Include="Formulas\StiCrystalNode.cs" />
     <Compile Include="Formulas\StiCrystalNullFields.cs" />
     <Compile Include="Formulas\StiCrystalParser.cs" />
+    <Compile Include="Formulas\StiCrystalParser.Basic.cs" />
+    <Compile Include="Formulas\StiCrystalBasicLowering.cs" />
     <Compile Include="Formulas\StiCrystalReference.cs" />
     <Compile Include="Formulas\StiCrystalToken.cs" />
     <Compile Include="Formulas\StiCrystalTranslator.cs" />
     <Compile Include="Formulas\StiCrystalTranslator.Functions.cs" />
+    <Compile Include="Formulas\StiCrystalTranslator.Conversions.cs" />
     <Compile Include="StiCrystalDatePattern.cs" />
     <Compile Include="StiCrystalFormulaField.cs" />
     <Compile Include="StiCrystalRunningTotal.cs" />

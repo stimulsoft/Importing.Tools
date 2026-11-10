@@ -73,6 +73,11 @@ namespace Import.CrystalReports
         /// formula or of the report; otherwise a NULL field which the formula reads gives NULL for the formula.
         /// </summary>
         public bool NullsAsDefault { get; set; }
+
+        /// <summary>
+        /// True if the formula is written in Basic syntax.
+        /// </summary>
+        public bool IsBasic { get; set; }
         #endregion
 
         public StiCrystalFormulaField(string name, string text, StiVariable variable, Type declaredType)

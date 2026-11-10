@@ -48,6 +48,11 @@ namespace Import.CrystalReports.Formulas
         RightParenthesis,
         LeftBracket,
         RightBracket,
+
+        /// <summary>
+        /// The end of a line in Basic syntax, which ends a statement.
+        /// </summary>
+        NewLine,
         End
     }
     #endregion

@@ -1225,7 +1225,7 @@ namespace Import.CrystalReports
                     stimulReport.Dictionary.Variables.Add(variable);
 
                     AddFormulaField(formulaName, formula.Text ?? string.Empty, variable, ConvertType(formula.ValueType),
-                        GetNullsAsDefault(crystalReport, formula));
+                        GetNullsAsDefault(crystalReport, formula), IsBasicFormula(formula));
 
                     //htVariableConversion.Add(formulaName, ReplaceSymbols(formulaName));
                     htVariableConversion[formulaName] = formulaNameNormalized;

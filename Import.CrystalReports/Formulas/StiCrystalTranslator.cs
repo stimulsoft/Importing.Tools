@@ -53,6 +53,11 @@ namespace Import.CrystalReports.Formulas
         private const int MaxChooseValues = 25;
 
         /// <summary>
+        /// The last item of Split which is cut out by the positions of the delimiters.
+        /// </summary>
+        private const int MaxSplitItem = 20;
+
+        /// <summary>
         /// The words which set the time of evaluation of a formula; Stimulsoft has no such notion, they are skipped.
         /// </summary>
         private static readonly string[] EvaluationTimeWords =
@@ -84,6 +89,11 @@ namespace Import.CrystalReports.Formulas
         /// a suppressed section, so the section is not disabled.
         /// </summary>
         public bool HasAssignments => assignmentCount > 0;
+
+        /// <summary>
+        /// True if the text of the formula is in Basic syntax, otherwise in Crystal syntax.
+        /// </summary>
+        public bool IsBasic { get; set; }
         #endregion
 
         #region Methods
@@ -93,7 +103,7 @@ namespace Import.CrystalReports.Formulas
         /// </summary>
         public StiCrystalExpression Translate(string formula)
         {
-            return Translate(StiCrystalParser.Parse(formula));
+            return Translate(StiCrystalParser.Parse(formula, IsBasic));
         }
 
         /// <summary>
@@ -834,7 +844,7 @@ namespace Import.CrystalReports.Formulas
         /// </summary>
         private StiCrystalExpression TranslateIndex(StiCrystalNode node)
         {
-            var split = TranslateFirstSplitItem(node);
+            var split = TranslateSplitItem(node);
             if (split != null)
                 return split;
 
@@ -859,10 +869,12 @@ namespace Import.CrystalReports.Formulas
         }
 
         /// <summary>
-        /// Split(text, delimiter)[1], the text before the first delimiter. The interpretation has no arrays of
-        /// strings, so only the first item is taken, by the position of the delimiter.
+        /// Split(text, delimiter)[n] with a constant n. The interpretation has no arrays of strings, so the item is
+        /// cut out by the positions of the delimiters: the position of every delimiter is searched from the previous
+        /// one, and n delimiters are added to the end of the text, so a missing item is empty. The checks of the
+        /// addresses, Split({checkhed.Calc_DspVendorAddr}, '~')[1..5], failed in 26 reports of the corpus.
         /// </summary>
-        private StiCrystalExpression TranslateFirstSplitItem(StiCrystalNode node)
+        private StiCrystalExpression TranslateSplitItem(StiCrystalNode node)
         {
             var call = node.Children[0];
             var subscript = node.Children[1];
@@ -870,7 +882,10 @@ namespace Import.CrystalReports.Formulas
                 StringComparison.OrdinalIgnoreCase) || call.Children.Count != 2)
                 return null;
 
-            if (subscript.Kind != StiCrystalNodeKind.Number || subscript.Text != "1")
+            int item;
+            if (subscript.Kind != StiCrystalNodeKind.Number ||
+                !int.TryParse(subscript.Text, NumberStyles.None, CultureInfo.InvariantCulture, out item) ||
+                item < 1 || item > MaxSplitItem)
                 return null;
 
             var text = TranslateNode(call.Children[0]);
@@ -878,8 +893,25 @@ namespace Import.CrystalReports.Formulas
             if (text.Type != typeof(string) || string.IsNullOrEmpty(delimiter.Literal))
                 return null;
 
-            var position = $"{text.ToOperand()}.IndexOf({delimiter.Code})";
-            var code = $"({position} < 0 ? {text.Code} : Left({text.Code}, {position}))";
+            if (item == 1)
+            {
+                var first = $"{text.ToOperand()}.IndexOf({delimiter.Code})";
+                var firstCode = $"({first} < 0 ? {text.Code} : Left({text.Code}, {first}))";
+                return new StiCrystalExpression(firstCode, typeof(string), isAtomic: true);
+            }
+
+            var length = delimiter.Literal.Length;
+            var padded = $"({text.ToOperand()} + " +
+                $"{ToCSharpString(string.Concat(Enumerable.Repeat(delimiter.Literal, item)))})";
+            var previous = (-length).ToString(CultureInfo.InvariantCulture);
+            for (var index = 1; index < item; index++)
+            {
+                previous = $"{padded}.IndexOf({delimiter.Code}, {previous} + {length})";
+            }
+
+            var start = $"{previous} + {length}";
+            var next = $"{padded}.IndexOf({delimiter.Code}, {start})";
+            var code = $"{padded}.Substring({start}, {next} - ({start}))";
             return new StiCrystalExpression(code, typeof(string), isAtomic: true);
         }
 

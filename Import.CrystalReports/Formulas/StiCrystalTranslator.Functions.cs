@@ -80,6 +80,7 @@ namespace Import.CrystalReports.Formulas
                 ?? TranslateDateFunction(lowerName, args, position)
                 ?? TranslateMathFunction(lowerName, args, position)
                 ?? TranslateDataFunction(lowerName, args, position)
+                ?? TranslateConversionFunction(lowerName, args, position)
                 ?? TranslateFormatConstant(lowerName, args);
 
             if (result == null)
@@ -728,6 +729,13 @@ namespace Import.CrystalReports.Formulas
 
         private static StiCrystalExpression TranslateDateTime(List<StiCrystalExpression> args)
         {
+            // DateTime of a date and a time of the day
+            if (args.Count == 2 && IsDate(args[0].Type) && args[1].Type == typeof(TimeSpan))
+            {
+                return new StiCrystalExpression($"{args[0].ToOperand()}.Date.Add({args[1].Code})", typeof(DateTime),
+                    isAtomic: true);
+            }
+
             if (args.Count == 6)
             {
                 var date = Call("DateSerial", typeof(DateTime),
@@ -1305,8 +1313,8 @@ namespace Import.CrystalReports.Formulas
                     return true;
 
                 case StiCrystalNodeKind.Call:
-                    if (!string.Equals(node.Text, "color", StringComparison.OrdinalIgnoreCase) ||
-                        node.Children.Count != 3 || node.Children.Any(c => c.Kind != StiCrystalNodeKind.Number))
+                    if (!IsColorFunction(node.Text) || node.Children.Count != 3 ||
+                        node.Children.Any(c => c.Kind != StiCrystalNodeKind.Number))
                         return false;
 
                     var parts = node.Children.Select(c => int.Parse(c.Text, CultureInfo.InvariantCulture)).ToList();
@@ -1315,6 +1323,15 @@ namespace Import.CrystalReports.Formulas
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Color(red, green, blue) and RGB of Basic, the same number of a color.
+        /// </summary>
+        private static bool IsColorFunction(string name)
+        {
+            return string.Equals(name, "color", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(name, "rgb", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool AreEqual(object first, object second)
@@ -1333,7 +1350,7 @@ namespace Import.CrystalReports.Formulas
         /// </summary>
         private static StiCrystalExpression TranslateFormatConstant(string name, List<StiCrystalExpression> args)
         {
-            if (name == "color" && args.Count == 3)
+            if (IsColorFunction(name) && args.Count == 3)
             {
                 var code = $"{Coerce(args[0], typeof(int)).ToOperand()} + " +
                     $"{Coerce(args[1], typeof(int)).ToOperand()} * 256 + " +
