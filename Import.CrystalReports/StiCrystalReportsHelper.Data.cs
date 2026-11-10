@@ -98,6 +98,8 @@ namespace Import.CrystalReports
         /// the last child, as the main source and printed 3684 rows of details. G1447 reads only a Command, its four
         /// linked tables without fields are left out. The synthetic data of the checks has one row in every table but
         /// the main one, so only the databases showed it. A report which uses no field keeps all the tables.
+        /// A table between two tables of the query stays: film_actor links film and actor in the Polish samples
+        /// of sakila (G2664, G2637), and without it actor became the main source and printed one row of twelve.
         /// </summary>
         private HashSet<StiDataSource> GetUnusedSources(ReportDocument report, List<StiDataRelation> relations)
         {
@@ -131,12 +133,32 @@ namespace Import.CrystalReports
                     if (relations.Any(r => r.ParentSource == source && !unused.Contains(r.ChildSource)))
                         continue;
 
+                    // A child of two tables which stay, like a table of a many-to-many link, joins them; a parent
+                    // linked only to this table doesn't count, it would stay just because of it
+                    var linked = relations
+                        .Where(r => r.ChildSource == source && !unused.Contains(r.ParentSource))
+                        .Select(r => r.ParentSource).Distinct()
+                        .Count(p => used.Contains(p) || HasOtherLinks(p, source, relations, unused));
+                    if (linked > 1)
+                        continue;
+
                     unused.Add(source);
                     changed = true;
                 }
             }
 
             return unused;
+        }
+
+        /// <summary>
+        /// Whether the source links a table which stays, other than the given one.
+        /// </summary>
+        private static bool HasOtherLinks(StiDataSource source, StiDataSource other, List<StiDataRelation> relations,
+            HashSet<StiDataSource> unused)
+        {
+            return relations.Any(r =>
+                (r.ParentSource == source && r.ChildSource != other && !unused.Contains(r.ChildSource)) ||
+                (r.ChildSource == source && r.ParentSource != other && !unused.Contains(r.ParentSource)));
         }
 
         private static bool IsProvider(string provider, string[] providers)
