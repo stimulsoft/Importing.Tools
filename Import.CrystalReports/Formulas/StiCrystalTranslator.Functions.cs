@@ -254,6 +254,21 @@ namespace Import.CrystalReports.Formulas
                         return Coerce(args[0], typeof(decimal));
 
                     break;
+
+                // The checks before ToNumber and CDate: the functions of the report parse the string as ParseDouble
+                // and StrToDateTime do
+                case "isnumeric":
+                    if (args.Count == 1 && args[0].Type == typeof(string))
+                        return Call("TryParseDouble", typeof(bool), args[0]);
+
+                    break;
+
+                case "isdate":
+                case "isdatetime":
+                    if (args.Count == 1 && args[0].Type == typeof(string))
+                        return Call("TryParseDateTime", typeof(bool), args[0]);
+
+                    break;
             }
 
             return null;
@@ -1205,6 +1220,11 @@ namespace Import.CrystalReports.Formulas
                         CollectResultConstants(node.Children.Last(), constants);
 
                     return;
+
+                case StiCrystalNodeKind.Call when IsIif(node):
+                    CollectResultConstants(node.Children[1], constants);
+                    CollectResultConstants(node.Children[2], constants);
+                    return;
             }
 
             object value;
@@ -1253,6 +1273,10 @@ namespace Import.CrystalReports.Formulas
                         node.Children.Take(node.Children.Count - 1).ToArray());
 
                     return sequence.Add(ReplaceResults(node.Children.Last(), value));
+
+                case StiCrystalNodeKind.Call when IsIif(node):
+                    return new StiCrystalNode(StiCrystalNodeKind.If, null, node.Position, node.Children[0],
+                        ReplaceResults(node.Children[1], value), ReplaceResults(node.Children[2], value));
             }
 
             object constant;
@@ -1261,6 +1285,14 @@ namespace Import.CrystalReports.Formulas
 
             var constantNode = CreateConstant(value, node.Position);
             return new StiCrystalNode(StiCrystalNodeKind.Binary, "=", node.Position, node, constantNode);
+        }
+
+        /// <summary>
+        /// IIf(condition, a, b) gives one of two values like If, the constants of a color are in both.
+        /// </summary>
+        private static bool IsIif(StiCrystalNode node)
+        {
+            return node.Children.Count == 3 && string.Equals(node.Text, "iif", StringComparison.OrdinalIgnoreCase);
         }
 
         private static StiCrystalNode CreateBoolean(bool value, int position)

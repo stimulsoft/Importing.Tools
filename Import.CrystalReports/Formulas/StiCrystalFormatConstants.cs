@@ -78,15 +78,26 @@ namespace Import.CrystalReports.Formulas
             { "crbold", Bold },
             { "crbolditalic", BoldItalic }
         };
+        private static readonly HashSet<string> fontStyles = new HashSet<string>
+        {
+            "regular",
+            "italic",
+            "bold",
+            "bolditalic"
+        };
         #endregion
 
         #region Methods
         /// <summary>
-        /// Returns the number of a constant by its name in lower case.
+        /// Returns the number of a constant by its name in lower case. Crystal knows the colors without the prefix
+        /// too, from its old versions: "if ... then Lime else White", about 130 formulas of the corpus.
         /// </summary>
         public static bool TryGetValue(string name, out int value)
         {
-            return constants.TryGetValue(name, out value);
+            if (constants.TryGetValue(name, out value))
+                return true;
+
+            return !name.StartsWith("cr") && !fontStyles.Contains(name) && constants.TryGetValue("cr" + name, out value);
         }
 
         /// <summary>

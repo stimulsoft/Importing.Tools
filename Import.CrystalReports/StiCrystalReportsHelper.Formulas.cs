@@ -60,6 +60,7 @@ namespace Import.CrystalReports
         private const string FormatSize = "FontSize";
         private const string FormatUnderline = "Underline";
         private const string FormatStrikeout = "Strikeout";
+        private const int MaxResultFormulaDepth = 10;
         #endregion
 
         #region Consts.Summaries
@@ -368,6 +369,59 @@ namespace Import.CrystalReports
                 formula.IsTranslating = false;
                 formula.IsTranslated = true;
             }
+        }
+
+        /// <summary>
+        /// Puts the text of a formula field instead of a reference to it at the ends of the branches. The color of
+        /// a formula of the formatting is often a formula of the report, {@ColorContentText} after the template of
+        /// Crystal in 45 formulas of the corpus, and its constants are in the text of that formula. The tree is the
+        /// copy which the inliner of the functions made, it is changed in place.
+        /// </summary>
+        private StiCrystalNode InlineResultFormulas(StiCrystalNode node, int depth)
+        {
+            switch (node.Kind)
+            {
+                case StiCrystalNodeKind.Reference:
+                    StiCrystalFormulaField formula;
+                    if (depth >= MaxResultFormulaDepth || !formulaFields.TryGetValue(node.Text, out formula))
+                        return node;
+
+                    try
+                    {
+                        var body = StiCrystalParser.Parse(formula.Text, formula.IsBasic);
+                        return InlineResultFormulas(StiCrystalFunctionInliner.Inline(body, resolver), depth + 1);
+                    }
+                    catch (StiCrystalFormulaException)
+                    {
+                        return node;
+                    }
+
+                case StiCrystalNodeKind.If:
+                    for (var index = 1; index < node.Children.Count; index++)
+                    {
+                        node.Children[index] = InlineResultFormulas(node.Children[index], depth);
+                    }
+
+                    return node;
+
+                case StiCrystalNodeKind.Select:
+                    foreach (var branch in node.Children.Skip(1))
+                    {
+                        var last = branch.Children.Count - 1;
+                        branch.Children[last] = InlineResultFormulas(branch.Children[last], depth);
+                    }
+
+                    return node;
+
+                case StiCrystalNodeKind.Sequence:
+                    if (node.Children.Count > 0)
+                        node.Children[node.Children.Count - 1] =
+                            InlineResultFormulas(node.Children[node.Children.Count - 1], depth);
+
+                    return node;
+            }
+
+            return node;
         }
 
         /// <summary>
@@ -803,6 +857,12 @@ namespace Import.CrystalReports
             try
             {
                 var node = StiCrystalFunctionInliner.Inline(StiCrystalParser.Parse(formula), resolver);
+
+                // A formula of comments only, often the template of Crystal "This conditional formatting formula
+                // must return one of the following Color Constants", changes nothing
+                if (node.Kind == StiCrystalNodeKind.Sequence && node.Children.Count == 0)
+                    return;
+
                 var translator = new StiCrystalTranslator(resolver);
                 if (kind == FormatUnderline || kind == FormatStrikeout)
                 {
@@ -826,6 +886,12 @@ namespace Import.CrystalReports
                 }
 
                 var values = StiCrystalTranslator.GetResultConstants(node);
+                if (values.Count == 0)
+                {
+                    node = InlineResultFormulas(node, 0);
+                    values = StiCrystalTranslator.GetResultConstants(node);
+                }
+
                 if (values.Count == 0)
                     throw new StiCrystalFormulaException("The formula has no constant values");
 
