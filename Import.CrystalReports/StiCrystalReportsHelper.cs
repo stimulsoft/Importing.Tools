@@ -771,28 +771,42 @@ namespace Import.CrystalReports
                 if ((DataBaseName == null) || (DataBaseName.Length == 0)) DataBaseName = table.Name;
                 #endregion
 
+                // A DataSet of ADO.NET or a file of field definitions: the application gives the data at run time
+                var applicationData = GetApplicationDataName(table, DataBaseDll, QEDataBaseType, ServerName, htLogon);
+
                 StiDatabase database = null;
-                if (htDataBaseNames[DataBaseName] == null)
+                if (applicationData == null && htDataBaseNames[DataBaseName] == null)
                 {
                     #region Make new database
                     string databaseName = DataBaseName;
                     string databaseConnectionString = null;
-                    switch (QEDataBaseType)
+                    string provider = htLogon["Provider"] as string ?? "Unknown";
+                    switch (GetConnectionType(DataBaseDll, QEDataBaseType, provider))
                     {
-                        case "Access/Excel (DAO)":
-                            databaseConnectionString = string.Format(
-                                "Provider=Microsoft.Jet.OLEDB.4.0;Data Source={0};User Id={1};Password={2};",
-                                ServerName,
-                                table.LogOnInfo.ConnectionInfo.UserID,
-                                table.LogOnInfo.ConnectionInfo.Password);
+                        case ConnectionAccess:
+                            // DAO reads Access and also text files, which are not a database of Access
+                            if (string.Equals(htLogon["Database Type"] as string, "Text",
+                                StringComparison.OrdinalIgnoreCase))
+                                break;
+
                             databaseName = System.IO.Path.GetFileName(ServerName).Replace('.', '_');
-                            database = new StiOleDbDatabase(databaseName, databaseConnectionString);
-                            //DataBaseName = databaseName;
+                            database = new StiMSAccessDatabase(databaseName, GetAccessConnectionString(
+                                htLogon["Provider"] as string, ServerName, table.LogOnInfo.ConnectionInfo.UserID));
+                            break;
+
+                        case ConnectionOracle:
+                            database = new StiOracleDatabase(databaseName, GetOracleConnectionString(
+                                ServerName, table.LogOnInfo.ConnectionInfo.UserID));
+                            break;
+
+                        case ConnectionXBase:
+                            // A table is a file, the database is its folder: the folder reads every file as a table
+                            var folder = System.IO.Path.GetDirectoryName(ServerName) ?? string.Empty;
+                            databaseName = StiNameValidator.CorrectName(System.IO.Path.GetFileName(folder));
+                            database = new StiDBaseDatabase(databaseName, folder);
                             break;
 
                         case "OLE DB (ADO)":
-                            string provider = "Unknown";
-                            if (htLogon.ContainsKey("Provider")) provider = (string)htLogon["Provider"];
                             if (IsSqlServerProvider(provider))
                             {
                                 databaseName = DataBaseName;
@@ -833,26 +847,13 @@ namespace Import.CrystalReports
                             break;
 
                         case "ADO.NET":
-                            string filePath = string.Empty;
-                            if (htLogon.ContainsKey("File Path")) filePath = (string)htLogon["File Path"];
-                            databaseName = System.IO.Path.GetFileName(ServerName).Replace('.', '_');
-                            if (filePath.EndsWith(".xsd"))
-                            {
-                                database = new StiXmlDatabase(
-                                    databaseName,
-                                    string.Empty,
-                                    filePath);
-                            }
-                            break;
-
                         case "ADO.NET (XML)":
-                            string filePath2 = string.Empty;
-                            if (htLogon.ContainsKey("File Path")) filePath2 = (string)htLogon["File Path"];
+                            // A schema in the file of the DataSet, a file of XML is the data itself
+                            var filePath = htLogon["File Path"] as string ?? string.Empty;
                             databaseName = System.IO.Path.GetFileName(ServerName).Replace('.', '_');
-                            database = new StiXmlDatabase(
-                                databaseName,
-                                string.Empty,
-                                filePath2);
+                            database = filePath.EndsWith(".xsd", StringComparison.OrdinalIgnoreCase)
+                                ? new StiXmlDatabase(databaseName, filePath, string.Empty)
+                                : new StiXmlDatabase(databaseName, string.Empty, filePath);
                             break;
 
                         case "XML":
@@ -860,6 +861,8 @@ namespace Import.CrystalReports
                             string schemaPath = string.Empty;
                             if (htLogon.ContainsKey("Local XML File")) dataPath = (string)htLogon["Local XML File"];
                             if (htLogon.ContainsKey("Local Schema File")) schemaPath = (string)htLogon["Local Schema File"];
+                            if (string.IsNullOrEmpty(dataPath)) dataPath = htLogon["Http(s) XML URL"] as string;
+                            if (string.IsNullOrEmpty(schemaPath)) schemaPath = htLogon["Http(s) Schema URL"] as string;
                             databaseName = System.IO.Path.GetFileName(ServerName).Replace('.', '_');
                             database = new StiXmlDatabase(
                                 databaseName,
@@ -910,7 +913,7 @@ namespace Import.CrystalReports
                     htTableNameToDatabase["database:" + DataBaseName] = database;
                     log.WriteNode("Database: ", DataBaseName);
                 }
-                else
+                else if (applicationData == null)
                 {
                     database = (StiDatabase)htTableNameToDatabase["database:" + DataBaseName];
                     htTableNameToDatabase[table.Name] = database;
@@ -918,21 +921,37 @@ namespace Import.CrystalReports
 
                 #region Make DataSource
                 StiDataSource dataSource = null;
-                if ((htTableNameToDatabase[table.Name] as StiOleDbDatabase) != null)
+                if (applicationData != null)
                 {
-                    string nameInSource = database.Name;
-                    dataSource = new StiOleDbSource(nameInSource, GetDataSourceName(table.Name), table.Name);
+                    dataSource = new StiDataTableSource(applicationData, GetDataSourceName(table.Name), table.Name);
                 }
-                if ((htTableNameToDatabase[table.Name] as StiXmlDatabase) != null)
+                else if (database is StiOracleDatabase)
+                {
+                    dataSource = new StiOracleSource(database.Name, GetDataSourceName(table.Name), table.Name);
+                }
+                else if (database is StiMSAccessDatabase)
+                {
+                    dataSource = new StiMSAccessSource(database.Name, GetDataSourceName(table.Name), table.Name);
+                }
+                else if (database is StiDBaseDatabase)
+                {
+                    var nameInSource = $"{database.Name}.{System.IO.Path.GetFileNameWithoutExtension(ServerName)}";
+                    dataSource = new StiDataTableSource(nameInSource, GetDataSourceName(table.Name), table.Name);
+                }
+                else if (database is StiOleDbDatabase)
+                {
+                    dataSource = new StiOleDbSource(database.Name, GetDataSourceName(table.Name), table.Name);
+                }
+                else if (database is StiXmlDatabase)
                 {
                     string nameInSource = database.Name + "." + table.Name;
                     dataSource = new StiDataTableSource(nameInSource, GetDataSourceName(table.Name), table.Name);
                 }
-                if ((htTableNameToDatabase[table.Name] as StiOdbcDatabase) != null)
+                else if (database is StiOdbcDatabase)
                 {
                     dataSource = new StiOdbcSource(database.Name, GetDataSourceName(table.Name), table.Name);
                 }
-                if (dataSource == null)
+                else
                 {
                     dataSource = new StiSqlSource(database.Name, GetDataSourceName(table.Name), table.Name);
                 }

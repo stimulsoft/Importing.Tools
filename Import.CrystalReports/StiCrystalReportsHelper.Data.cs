@@ -54,6 +54,22 @@ namespace Import.CrystalReports
         #region Consts.Data
         private static readonly string[] SqlServerProviders = { "SQLOLEDB", "SQLNCLI", "MSOLEDBSQL" };
 
+        private static readonly string[] OracleProviders = { "OraOLEDB", "MSDAORA" };
+
+        private static readonly string[] AccessProviders = { "Microsoft.ACE.OLEDB", "Microsoft.Jet.OLEDB" };
+
+        private const string AccessProvider = "Microsoft.ACE.OLEDB.12.0";
+
+        private const string ConnectionAccess = "Access/Excel (DAO)";
+
+        private const string ConnectionOracle = "Oracle";
+
+        private const string ConnectionXBase = "xBase";
+
+        private const string ConnectionXml = "XML";
+
+        private const string ConnectionOdbc = "ODBC (RDO)";
+
         private static readonly Regex CommandParameter = new Regex(@"\{\?([^}]+)\}", RegexOptions.Compiled);
 
         private static readonly Dictionary<string, RasData.CrDateConditionEnum> DatePeriods =
@@ -72,8 +88,123 @@ namespace Import.CrystalReports
         #region Methods.Data
         private static bool IsSqlServerProvider(string provider)
         {
-            return provider != null &&
-                SqlServerProviders.Any(p => provider.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+            return IsProvider(provider, SqlServerProviders);
+        }
+
+        private static bool IsProvider(string provider, string[] providers)
+        {
+            return provider != null && providers.Any(p => provider.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// The type of a connection as QE_DatabaseType names it. The native drivers of Oracle, DAO, xBase and XML
+        /// leave it empty and are known by their library, Oracle, Access and ODBC through OLE DB by the provider.
+        /// Such tables could not be identified before: Access through DAO in 182 reports, Oracle in 97, xBase in 25.
+        /// </summary>
+        private static string GetConnectionType(string library, string type, string provider)
+        {
+            if (string.Equals(library, "crdb_dao.dll", StringComparison.OrdinalIgnoreCase))
+                return ConnectionAccess;
+
+            if (string.Equals(library, "crdb_oracle.dll", StringComparison.OrdinalIgnoreCase))
+                return ConnectionOracle;
+
+            if (string.Equals(library, "crdb_p2bxbse.dll", StringComparison.OrdinalIgnoreCase))
+                return ConnectionXBase;
+
+            if (string.Equals(library, "crdb_xml.dll", StringComparison.OrdinalIgnoreCase))
+                return ConnectionXml;
+
+            // The provider of OLE DB for ODBC: its data source is the DSN
+            if (type == "OLE DB (ADO)" && IsProvider(provider, new[] { "MSDASQL" }))
+                return ConnectionOdbc;
+
+            if (type == "OLE DB (ADO)" && IsProvider(provider, OracleProviders))
+                return ConnectionOracle;
+
+            if (type == "OLE DB (ADO)" && IsProvider(provider, AccessProviders))
+                return ConnectionAccess;
+
+            return type;
+        }
+
+        /// <summary>
+        /// The name of the data which the application gives at run time, null for a table of a database: a DataSet
+        /// of ADO.NET without a file is registered by its name, a file of field definitions (TTX) describes the
+        /// columns of a table only. Such a table has no database, the report reads the registered data.
+        /// </summary>
+        private static string GetApplicationDataName(Table table, string library, string type, string server,
+            Hashtable logon)
+        {
+            if (string.Equals(library, "crdb_fielddef.dll", StringComparison.OrdinalIgnoreCase))
+                return table.Name;
+
+            if ((type == "ADO.NET" || type == "ADO.NET (XML)") && string.IsNullOrEmpty(logon["File Path"] as string))
+                return $"{System.IO.Path.GetFileName(server).Replace('.', '_')}.{table.Name}";
+
+            return null;
+        }
+
+        private static string GetOracleConnectionString(string server, string user)
+        {
+            return $"Data Source={server};User Id={user};Password=;";
+        }
+
+        private static string GetAccessConnectionString(string provider, string path, string user)
+        {
+            if (!IsProvider(provider, AccessProviders))
+                provider = AccessProvider;
+
+            var connectionString = $"Provider={provider};Data Source={path};";
+            if (!string.IsNullOrEmpty(user))
+                connectionString += $"User ID={user};Password=;";
+
+            return connectionString;
+        }
+
+        /// <summary>
+        /// The connection string of a connection without a DSN, which Crystal keeps whole (SAP Business One:
+        /// DRIVER={B1CRHPROXY32};DATABASE=...;SERVERNODE=...), without the password. The logon keeps the current
+        /// values of its keys apart, the string may hold the old ones (B0001: DATABASE=SBODEMOUS in the string,
+        /// Database=SBODEMODK in the logon), so a key of the logon replaces the key of the same name.
+        /// </summary>
+        private static string GetOdbcDriverConnectionString(string connectionString, Hashtable logon)
+        {
+            var parts = new List<string>();
+            foreach (var part in connectionString.Split(';'))
+            {
+                var separator = part.IndexOf('=');
+                var key = separator > 0 ? part.Substring(0, separator).Trim() : null;
+                if (key == null)
+                {
+                    parts.Add(part);
+                    continue;
+                }
+
+                if (key.Equals("PWD", StringComparison.OrdinalIgnoreCase) ||
+                    key.Equals("Password", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var value = GetLogonValue(logon, key);
+                parts.Add(value != null ? $"{key}={value}" : part);
+            }
+
+            return string.Join(";", parts);
+        }
+
+        /// <summary>
+        /// The value of a key of the logon by its name in any case, except the connection string itself.
+        /// </summary>
+        private static string GetLogonValue(Hashtable logon, string key)
+        {
+            foreach (DictionaryEntry entry in logon)
+            {
+                var name = entry.Key as string;
+                if (name != "Connection String" && string.Equals(name, key, StringComparison.OrdinalIgnoreCase))
+                    return entry.Value as string;
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -96,12 +227,16 @@ namespace Import.CrystalReports
 
         private static string GetOdbcConnectionString(string server, Hashtable logon, string user)
         {
+            var driverConnectionString = logon["Connection String"] as string;
+            if (string.IsNullOrEmpty(logon["DSN"] as string) && !string.IsNullOrEmpty(driverConnectionString))
+                return GetOdbcDriverConnectionString(driverConnectionString, logon);
+
             var dsn = logon["DSN"] as string;
             if (string.IsNullOrEmpty(dsn))
                 dsn = server;
 
             var connectionString = $"Dsn={dsn}";
-            var database = logon["Database"] as string;
+            var database = logon["Database"] as string ?? logon["Initial Catalog"] as string;
             if (!string.IsNullOrEmpty(database))
                 connectionString += $";Database={database}";
 
@@ -162,7 +297,7 @@ namespace Import.CrystalReports
             if (string.IsNullOrEmpty(name))
                 name = table.Name;
 
-            source.SqlCommand = source is StiOdbcSource || source is StiOleDbSource
+            source.SqlCommand = source is StiOdbcSource || source is StiOleDbSource || source is StiOracleSource
                 ? $"select * from \"{name}\""
                 : $"select * from [{name}]";
         }
