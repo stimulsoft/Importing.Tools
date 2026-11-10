@@ -509,6 +509,7 @@ namespace Import.CrystalReports.Formulas
             switch (node.Text)
             {
                 case "not":
+                    operand = ToCondition(operand);
                     RequireBoolean(operand, node);
                     return new StiCrystalExpression("!" + operand.ToOperand(), typeof(bool));
 
@@ -684,6 +685,8 @@ namespace Import.CrystalReports.Formulas
         private static StiCrystalExpression TranslateLogical(string op, StiCrystalExpression left,
             StiCrystalExpression right, StiCrystalNode node)
         {
+            left = ToCondition(left);
+            right = ToCondition(right);
             RequireBoolean(left, node);
             RequireBoolean(right, node);
 
@@ -959,7 +962,7 @@ namespace Import.CrystalReports.Formulas
         /// </summary>
         private StiCrystalExpression TranslateIf(StiCrystalNode node)
         {
-            var condition = TranslateNode(node.Children[0]);
+            var condition = ToCondition(TranslateNode(node.Children[0]));
             RequireBoolean(condition, node);
 
             var count = assignmentCount;
@@ -1224,6 +1227,19 @@ namespace Import.CrystalReports.Formulas
         {
             if (value.Type != typeof(string) && value.Type != typeof(object))
                 throw new StiCrystalFormulaException($"A string expected instead of {value.Type.Name}", node.Position);
+        }
+
+        /// <summary>
+        /// DefaultAttribute in a condition, like "if DefaultAttribute or {x} <> 'Charge'" in the suppression of
+        /// a section, is the checkbox of the attribute; with a formula the checkbox is off, so it is false. The
+        /// constant of the formatting, -1, broke the conditions of G2397, G2398 and G2400.
+        /// </summary>
+        private static StiCrystalExpression ToCondition(StiCrystalExpression value)
+        {
+            var defaultAttribute = StiCrystalFormatConstants.DefaultAttribute.ToString(CultureInfo.InvariantCulture);
+            return value.Type == typeof(int) && value.Code == defaultAttribute
+                ? new StiCrystalExpression("false", typeof(bool), isAtomic: true)
+                : value;
         }
 
         private static void RequireBoolean(StiCrystalExpression value, StiCrystalNode node)

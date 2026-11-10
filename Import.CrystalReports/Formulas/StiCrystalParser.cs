@@ -247,6 +247,7 @@ namespace Import.CrystalReports.Formulas
                 index++;
             }
 
+            var nameIndex = index;
             var name = Current.Text;
             Expect(StiCrystalTokenType.Identifier);
 
@@ -264,7 +265,25 @@ namespace Import.CrystalReports.Formulas
                 node.Add(ParseExpression());
             }
 
+            // A declaration gives the value of the variable, so an operator may follow it: "numbervar header <> 1",
+            // "BooleanVar Suppress and ..." in the conditions of suppression. The rest starts again from the name.
+            else if (IsBinaryOperator())
+            {
+                index = nameIndex;
+                return new StiCrystalNode(StiCrystalNodeKind.Sequence, null, position, node, ParseExpression());
+            }
+
             return node;
+        }
+
+        private bool IsBinaryOperator()
+        {
+            if (Current.Type == StiCrystalTokenType.Operator)
+                return true;
+
+            return Current.IsWord("and") || Current.IsWord("or") || Current.IsWord("xor") || Current.IsWord("eqv") ||
+                Current.IsWord("imp") || Current.IsWord("in") || Current.IsWord("like") ||
+                Current.IsWord("startswith") || Current.IsWord("mod");
         }
 
         /// <summary>
