@@ -471,6 +471,7 @@ namespace Import.CrystalReports
         private void AddPage(StiPage page, ReportDocument crystalReport, bool isSubReport, IStiTreeLog log)
         {
             InitFormulas(page);
+            InitCharts();
 
             #region Page Parameters
             page.TitleBeforeHeader = true;
@@ -1516,6 +1517,9 @@ namespace Import.CrystalReports
                                         groupPeriod = conditionIndex < groups.Count
                                             ? GetGroupPeriod(groups[conditionIndex])
                                             : null;
+
+                                        AddChartGroup(conditionIndex, groupHeaderBand.Condition.Value,
+                                            GetChartGroupType(groups, conditionIndex, groupKey));
                                     }
                                     groupFieldsCounter = conditionIndex + 1;
                                 }
@@ -1831,9 +1835,13 @@ namespace Import.CrystalReports
                 {
                     return ImportCrossTabObject(obj);
                 }
+                case ReportObjectKind.ChartObject:
+                {
+                    return ImportChartObject(obj);
+                }
 				default:
 				{
-                    // Charts, maps and OLAP grids: their content is not available
+                    // Maps and OLAP grids: their content is not available
                     warningList.Add(StiWarning.GetWarningObject(obj.Name, obj.Kind.ToString()));
 					return null;
 				}						

@@ -160,6 +160,7 @@ namespace Import.CrystalReports
 
             pendingTranslations.Clear();
             KeepAssignmentsCalculated();
+            CompleteCharts();
         }
 
         /// <summary>
@@ -482,6 +483,7 @@ namespace Import.CrystalReports
 
                 dataBand.Filters.Add(new StiFilter(expression.Code));
                 dataBand.FilterOn = true;
+                AddChartRecordSelection(expression.Code);
             });
         }
 

@@ -163,6 +163,9 @@
     <Compile Include="StiCrystalFormulaField.cs" />
     <Compile Include="StiCrystalRunningTotal.cs" />
     <Compile Include="StiCrystalReportResolver.cs" />
+    <Compile Include="StiCrystalChartGroup.cs" />
+    <Compile Include="StiCrystalChartValue.cs" />
+    <Compile Include="StiCrystalReportsHelper.Charts.cs" />
     <Compile Include="StiCrystalReportsHelper.Data.cs" />
     <Compile Include="StiCrystalReportsHelper.Formats.cs" />
     <Compile Include="StiCrystalReportsHelper.RunningTotals.cs" />
