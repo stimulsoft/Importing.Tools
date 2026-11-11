@@ -200,6 +200,7 @@ namespace Import.CrystalReports
             #endregion
 
             #region Values
+            var pointValueCount = GetPointValueCount(styleType);
             var values = new List<StiCrystalChartValue>();
             foreach (RasData.ISCRField field in definition.DataFields)
             {
@@ -218,13 +219,21 @@ namespace Import.CrystalReports
                 value.Column = name;
                 values.Add(value);
 
-                // A pie shows one value; a second condition divides the bars by its values, not by several values
-                if (seriesColumn != null || IsPieSeries(styleType))
+                // A pie shows one value; a second condition divides the bars by its values, not by several values;
+                // a point of a scatter takes its coordinates from the first values
+                var isLastValue = pointValueCount > 0
+                    ? values.Count == pointValueCount
+                    : seriesColumn != null || IsPieSeries(styleType);
+
+                if (isLastValue)
                     break;
             }
 
             if (values.Count == 0)
                 return SkipChart(obj, "Chart without values");
+
+            if (values.Count < pointValueCount)
+                return SkipChart(obj, $"{styleType} with {values.Count} values");
             #endregion
 
             source.GroupColumns = groupColumns.ToArray();
@@ -244,12 +253,20 @@ namespace Import.CrystalReports
 
             chart.FilterOn = chart.Filters.Count > 0;
 
-            foreach (var value in values)
+            // The values of a scatter or a bubble are the coordinates of one series: X, Y and the size
+            var seriesValues = pointValueCount > 0 ? values.Skip(1).Take(1).ToList() : values;
+            foreach (var value in seriesValues)
             {
                 var series = CreateChartSeries(styleType);
-                series.ArgumentDataColumn = $"{source.Name}.{argumentColumn}";
+                series.ArgumentDataColumn = pointValueCount > 0
+                    ? $"{source.Name}.{values[0].Column}"
+                    : $"{source.Name}.{argumentColumn}";
                 series.ValueDataColumn = $"{source.Name}.{value.Column}";
                 series.CoreTitle = value.Title;
+
+                var bubble = series as StiBubbleSeries;
+                if (bubble != null)
+                    bubble.WeightDataColumn = $"{source.Name}.{values[2].Column}";
 
                 if (seriesColumn != null)
                 {
@@ -602,15 +619,46 @@ namespace Import.CrystalReports
                 case Ras.CrChartStyleTypeEnum.crChartStyleTypeDoughnut:
                     return new StiDoughnutSeries();
 
+                // The numeric axis of Crystal is a line over dates or numbers (G2031, G2737)
+                case Ras.CrChartStyleTypeEnum.crChartStyleTypeNumeric:
+                    return new StiLineSeries();
+
+                case Ras.CrChartStyleTypeEnum.crChartStyleTypeRadar:
+                    return new StiRadarLineSeries();
+
+                case Ras.CrChartStyleTypeEnum.crChartStyleTypeFunnel:
+                    return new StiFunnelSeries();
+
+                case Ras.CrChartStyleTypeEnum.crChartStyleTypeXYScatter:
+                    return new StiScatterSeries();
+
+                case Ras.CrChartStyleTypeEnum.crChartStyleTypeBubble:
+                    return new StiBubbleSeries();
+
                 default:
                     return null;
             }
         }
 
+        /// <summary>
+        /// A pie and a funnel show one value of each argument.
+        /// </summary>
         private static bool IsPieSeries(Ras.CrChartStyleTypeEnum type)
         {
             return type == Ras.CrChartStyleTypeEnum.crChartStyleTypePie ||
-                type == Ras.CrChartStyleTypeEnum.crChartStyleTypeDoughnut;
+                type == Ras.CrChartStyleTypeEnum.crChartStyleTypeDoughnut ||
+                type == Ras.CrChartStyleTypeEnum.crChartStyleTypeFunnel;
+        }
+
+        /// <summary>
+        /// The number of the values of a point: X and Y of a scatter, X, Y and the size of a bubble; 0 when every
+        /// value is a series of its own over the argument.
+        /// </summary>
+        private static int GetPointValueCount(Ras.CrChartStyleTypeEnum type)
+        {
+            return type == Ras.CrChartStyleTypeEnum.crChartStyleTypeXYScatter ? 2
+                : type == Ras.CrChartStyleTypeEnum.crChartStyleTypeBubble ? 3
+                : 0;
         }
 
         private static Type GetChartFieldType(RasData.CrFieldValueTypeEnum type)
