@@ -201,6 +201,15 @@ namespace Import.CrystalReports
             if (child != null && HasColumn(child, name))
                 return true;
 
+            // The field of a relation whose name starts with Parent keeps the name, so the relation Parent and the
+            // table Parent gave two fields Parent in the class of the report (G1563)
+            var fieldName = name.StartsWith("Parent", StringComparison.Ordinal) ? name : "Parent" + name;
+            if (dictionary.DataSources.Cast<StiDataSource>().Any(s =>
+                string.Equals(s.Name, fieldName, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+
             return dictionary.Relations.Cast<StiDataRelation>().Any(r =>
                 string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase) &&
                 (r.ChildSource?.Name != child?.Name || r.ParentSource?.Name != relation.ParentSource?.Name));

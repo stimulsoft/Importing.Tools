@@ -58,6 +58,11 @@ namespace Import.CrystalReports.Formulas
         /// The denominator of the decimals of ToWords must stay an int.
         /// </summary>
         private const int MaxWordsDecimals = 9;
+
+        /// <summary>
+        /// The longest array of Maximum and Minimum, the code doubles with every value.
+        /// </summary>
+        private const int MaxExtremeItems = 4;
         #endregion
 
         #region Methods
@@ -1001,6 +1006,9 @@ namespace Import.CrystalReports.Formulas
                     if (args.Count == 1 && args[0].IsRange)
                         return name == "minimum" ? args[0].From : args[0].To;
 
+                    if (args.Count == 1 && args[0].IsArray)
+                        return TranslateArrayExtreme(name == "minimum", args[0], position);
+
                     return TranslateSummary(name, args, position);
 
                 case "sum":
@@ -1180,6 +1188,39 @@ namespace Import.CrystalReports.Formulas
                 return new StiCrystalExpression($"{value.ToOperand()}.Length > 0", typeof(bool));
 
             return new StiCrystalExpression("true", typeof(bool), isAtomic: true);
+        }
+
+        /// <summary>
+        /// Maximum([a, b]) of a few values of one type is the larger of them (G2747: the start of an event in a
+        /// week); every step repeats the code of the values before, so only a short array is taken.
+        /// </summary>
+        private StiCrystalExpression TranslateArrayExtreme(bool isMinimum, StiCrystalExpression array, int position)
+        {
+            var items = array.Items;
+            if (items.Count == 0 || items.Count > MaxExtremeItems || items.Any(i => i.IsRange))
+                throw new StiCrystalFormulaException("Maximum and Minimum need a short array of one type", position);
+
+            // The numbers take one type: [{Orders.Price}, 10] has a double and an int
+            var type = items[0].Type;
+            if (items.All(i => IsNumber(i.Type)))
+            {
+                type = items.Select(i => i.Type).Aggregate(GetCommonNumberType);
+                items = items.Select(i => Coerce(i, type)).ToList();
+            }
+
+            else if (items.Any(i => i.Type != type))
+                throw new StiCrystalFormulaException("Maximum and Minimum need a short array of one type", position);
+
+            var result = items[0];
+            var node = new StiCrystalNode(StiCrystalNodeKind.Call, isMinimum ? "minimum" : "maximum", position);
+            foreach (var item in items.Skip(1))
+            {
+                var condition = TranslateComparison(isMinimum ? "<" : ">", result, item, node);
+                result = new StiCrystalExpression(
+                    $"({condition.ToOperand()} ? {result.ToOperand()} : {item.ToOperand()})", type);
+            }
+
+            return result;
         }
         #endregion
 

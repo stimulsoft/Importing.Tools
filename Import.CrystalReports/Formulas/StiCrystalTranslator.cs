@@ -740,6 +740,17 @@ namespace Import.CrystalReports.Formulas
             if (op == "=" && (left.IsRange || left.Reference != null && left.Reference.IsMultiValue))
                 return TranslateIn(right, left, node);
 
+            // A parameter with several values differs from a value which is none of them: {?Building} <> "" of
+            // G0526 compared the list with a string and broke the compilation
+            if (op == "<>" && (right.Reference?.IsMultiValue == true || left.Reference?.IsMultiValue == true))
+            {
+                var inList = right.Reference?.IsMultiValue == true
+                    ? TranslateIn(left, right, node)
+                    : TranslateIn(right, left, node);
+
+                return new StiCrystalExpression("!" + inList.ToOperand(), typeof(bool));
+            }
+
             var csharpOp = op == "=" ? "==" : op == "<>" ? "!=" : op;
 
             if (IsNumber(left.Type) && IsNumber(right.Type))

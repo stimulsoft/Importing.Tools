@@ -299,7 +299,8 @@ namespace Import.CrystalReports
 
                 pendingTranslations.Add(() =>
                 {
-                    var expression = TranslateFormula(field, subReport.Name + "." + parameterName);
+                    var expression = TranslateFormula(field, subReport.Name + "." + parameterName,
+                        allowSummaries: false);
                     var code = GetParameterCode(expression, variable.Type);
                     if (code == null)
                     {
@@ -361,8 +362,8 @@ namespace Import.CrystalReports
         /// The engine of Crystal shows a special field inside a text object by its bare name: "PrintDate PrintTime"
         /// was printed as it is. The paragraphs of RAS tell the special fields from the text, so the text is built
         /// from them again, with a marker for every special field; the markers are replaced by the expressions after
-        /// the fields of the text are converted. Null when the text has no special fields, or when the paragraphs
-        /// don't give the text of the engine.
+        /// the fields of the text are converted. A plain text with braces gets a marker too, its braces are not
+        /// fields. Null when the text has neither, or when the paragraphs don't give the text of the engine.
         /// </summary>
         private static string GetTextWithSpecialFields(TextObject obj, List<string> expressions)
         {
@@ -391,6 +392,11 @@ namespace Import.CrystalReports
                         ? GetSpecialFieldText(value, field.FieldFormat)
                         : null;
 
+                    // The braces of a plain text are its characters, not a field: the lessons of the corpus explain
+                    // their formulas as "look at the {@period} formula" (G2914, G2938, G2946, G2947)
+                    if (field == null && value != null && value.IndexOfAny(new[] { '{', '}' }) >= 0)
+                        expression = EscapeBraces(value);
+
                     if (expression == null)
                     {
                         result.Append(value);
@@ -409,6 +415,24 @@ namespace Import.CrystalReports
             }
 
             return obj.Text.Contains("\r\n") ? result.ToString().Replace("\n", "\r\n") : result.ToString();
+        }
+
+        /// <summary>
+        /// The text with its braces printed by the expressions {"{"} and {"}"}, both modes print them so.
+        /// </summary>
+        private static string EscapeBraces(string text)
+        {
+            var result = new StringBuilder();
+            foreach (var ch in text)
+            {
+                if (ch == '{' || ch == '}')
+                    result.Append("{\"").Append(ch).Append("\"}");
+
+                else
+                    result.Append(ch);
+            }
+
+            return result.ToString();
         }
 
         private static string ReplaceSpecialFieldMarkers(string text, List<string> expressions)

@@ -439,10 +439,12 @@ namespace Import.CrystalReports
 
         /// <summary>
         /// Translates a formula which is not a formula field: a condition or a filter. Returns null and adds a warning
-        /// if the formula can't be translated; returns null without a warning for an empty formula.
+        /// if the formula can't be translated; returns null without a warning for an empty formula. Without
+        /// allowSummaries a summary fails too: the parameters of a subreport are plain code, which has no aggregate
+        /// functions (G2032: MaxDate in a link of a subreport broke the compilation).
         /// </summary>
         private StiCrystalExpression TranslateFormula(string text, string place,
-            StiCrystalReference currentFieldValue = null)
+            StiCrystalReference currentFieldValue = null, bool allowSummaries = true)
         {
             if (string.IsNullOrWhiteSpace(text))
                 return null;
@@ -455,6 +457,9 @@ namespace Import.CrystalReports
 
                 if (expression != null)
                     CheckOutsideText(translator, expression);
+
+                if (expression != null && !allowSummaries && translator.HasSummaries)
+                    throw new StiCrystalFormulaException("A summary can't set a parameter of a subreport");
 
                 return expression;
             }
@@ -703,7 +708,19 @@ namespace Import.CrystalReports
             try
             {
                 var expression = text.Substring(1, text.Length - 2);
-                return new StiCrystalReference(expression, ConvertType(fieldObject.DataSource.ValueType));
+                var type = ConvertType(fieldObject.DataSource.ValueType);
+
+                // The numeric summaries of Stimulsoft return decimal, as the translator types them: G2755 compared
+                // its Sum, taken as a double, with a double and failed the compilation
+                var summary = fieldObject.DataSource as SummaryFieldDefinition;
+                if (summary != null && type == typeof(double) &&
+                    summary.Operation != SummaryOperation.SampleStandardDeviation &&
+                    summary.Operation != SummaryOperation.PopStandardDeviation)
+                {
+                    type = typeof(decimal);
+                }
+
+                return new StiCrystalReference(expression, type);
             }
             catch (Exception)
             {

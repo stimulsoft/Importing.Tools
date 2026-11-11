@@ -49,6 +49,7 @@ using CrystalDecisions.Shared;
 using Import.CrystalReports.Formulas;
 using System.Runtime.ExceptionServices;
 using Regex = System.Text.RegularExpressions.Regex;
+using RegexOptions = System.Text.RegularExpressions.RegexOptions;
 //using CrystalDecisions.ReportAppServer.ReportDefModel;
 
 
@@ -100,6 +101,7 @@ namespace Import.CrystalReports
         private Hashtable textConversion = null;
         private ArrayList textConversionSorted = null;
         private bool flagTextConversionSorted = false;
+        private Regex textConversionRegex;
         private string[] sortFields = null;
         private ArrayList groupFields = null;
         private int groupFieldsCounter = 0;
@@ -176,22 +178,18 @@ namespace Import.CrystalReports
                 IComparer myComparer = new myComparerClass();
                 textConversionSorted.Sort(myComparer);
                 flagTextConversionSorted = true;
+                textConversionRegex = textConversionSorted.Count > 0
+                    ? new Regex(string.Join("|", textConversionSorted.Cast<DictionaryEntry>()
+                        .Select(de => Regex.Escape((string)de.Key))), RegexOptions.CultureInvariant)
+                    : null;
             }
 
-            StringBuilder sb = new StringBuilder(text);
-            //for (int index = 0; index < textConversion.Length; index++)
-            //{
-            //    sb.Replace((string)textConversion[index].Key, (string)textConversion[index].Value);
-            //}
-            //foreach (DictionaryEntry de in textConversion)
-            //{
-            //    sb.Replace((string)de.Key, (string)de.Value);
-            //}
-            foreach (DictionaryEntry de in textConversionSorted)
-            {
-                sb.Replace((string)de.Key, (string)de.Value);
-            }
-            return sb.ToString();
+            // One pass over the text: the replacement one by one changed the result of a longer name again,
+            // {NNM1.SeriesName} became {OINV.NNM1.SeriesName} and then {OINV.OINV.NNM1.SeriesName} (G1197)
+            if (string.IsNullOrEmpty(text) || textConversionRegex == null)
+                return text;
+
+            return textConversionRegex.Replace(text, match => (string)textConversion[match.Value]);
         }
 
         private void AddRangeToHashtable(Hashtable main, Hashtable range)

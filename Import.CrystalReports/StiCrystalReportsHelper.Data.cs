@@ -70,7 +70,7 @@ namespace Import.CrystalReports
 
         private const string ConnectionOdbc = "ODBC (RDO)";
 
-        private static readonly Regex CommandParameter = new Regex(@"\{\?([^}]+)\}", RegexOptions.Compiled);
+        private static readonly Regex CommandParameter = new Regex(@"\{\?([^}]+)\}|[{}]", RegexOptions.Compiled);
 
         private static readonly Dictionary<string, RasData.CrDateConditionEnum> DatePeriods =
             new Dictionary<string, RasData.CrDateConditionEnum>(StringComparer.OrdinalIgnoreCase)
@@ -374,23 +374,26 @@ namespace Import.CrystalReports
 
         /// <summary>
         /// A parameter of a Command, {?Name}, becomes the variable of the parameter, which Stimulsoft inserts into
-        /// the text of the SQL as Crystal does.
+        /// the text of the SQL as Crystal does. Any other brace is a character of the SQL, like the escape of ODBC
+        /// {oj ...} (G0146): Stimulsoft would take it for an expression, so it is printed by an expression.
         /// </summary>
         private string ReplaceCommandParameter(Match match)
         {
-            var variable = FindParameterVariable(match.Groups[1].Value);
-            if (variable == null)
+            if (match.Groups[1].Success)
             {
+                var variable = FindParameterVariable(match.Groups[1].Value);
+                if (variable != null)
+                    return "{" + variable + "}";
+
                 warningList.Add(StiWarning.GetWarningFormula("SQL", $"Unknown parameter {match.Value}"));
-                return match.Value;
             }
 
-            return "{" + variable + "}";
+            return EscapeBraces(match.Value);
         }
 
         /// <summary>
         /// Finds the variable of a parameter by its name; the names of Crystal are case insensitive, a Command
-        /// may write {?@lcWoNo} for the parameter @lcWono.
+        /// may write {?@lcWoNo} for the parameter @lcWono and {?SampleID} for the parameter @SampleID (G0589).
         /// </summary>
         private string FindParameterVariable(string parameter)
         {
@@ -399,6 +402,17 @@ namespace Import.CrystalReports
             {
                 if (string.Equals((string)entry.Key, key, StringComparison.OrdinalIgnoreCase))
                     return (string)entry.Value;
+            }
+
+            var name = parameter.TrimStart('@');
+            foreach (DictionaryEntry entry in htVariableConversion)
+            {
+                var entryKey = (string)entry.Key;
+                if (entryKey.StartsWith("?") &&
+                    string.Equals(entryKey.Substring(1).TrimStart('@'), name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return (string)entry.Value;
+                }
             }
 
             return null;
