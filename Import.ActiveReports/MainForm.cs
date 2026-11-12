@@ -332,7 +332,7 @@ namespace Import.ActiveReports
         private void btnBrowseRpx_Click(object sender, EventArgs e)
         {
             openFileDialog1.Title = "Select ActiveReports file";
-            openFileDialog1.Filter = "ActiveReports file (*.rpx)|*.rpx";
+            openFileDialog1.Filter = "ActiveReports files (*.rpx;*.rdlx;*.rdlx-json)|*.rpx;*.rdlx;*.rdlx-json";
 
             if (openFileDialog1.ShowDialog() == DialogResult.OK)
             {
@@ -379,17 +379,32 @@ namespace Import.ActiveReports
                 log.CloseLog();
                 log.OpenLog("Open ActiveReports template file ...");
                 Application.DoEvents();
+                var bytes = File.ReadAllBytes(tbRpxFile.Text);
+                var isRdlx = StiActiveReportsRdlxHelper.GetFormat(bytes) != StiActiveReportsFormat.Rpx;
                 XmlDocument doc = new XmlDocument();
-                doc.Load(tbRpxFile.Text);
+
+                if (!isRdlx)
+                    doc.Load(tbRpxFile.Text);
 
                 log.CurrentNode.Text += "OK";
                 log.CloseLog();
                 log.OpenLog("Converting ...");
                 Application.DoEvents();
 
-                StiActiveReportsHelper helper = new StiActiveReportsHelper();
                 var errorList = new List<string>();
-                helper.ProcessRootNode(doc.DocumentElement, report, errorList);
+
+                if (isRdlx)
+                {
+                    // The data files of an RDLX report are looked up in the folder of the report.
+                    var result = StiActiveReportsRdlxHelper.Import(bytes, Path.GetDirectoryName(tbRpxFile.Text));
+                    report = result.Report;
+                    errorList = result.Errors;
+                }
+                else
+                {
+                    StiActiveReportsHelper helper = new StiActiveReportsHelper();
+                    helper.ProcessRootNode(doc.DocumentElement, report, errorList);
+                }
 
                 if (checkBoxSetLinked.Checked)
                 {

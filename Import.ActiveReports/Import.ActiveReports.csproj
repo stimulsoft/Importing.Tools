@@ -92,6 +92,23 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Enums.cs" />
+    <Compile Include="StiActiveReportsRdlxHelper.Chart.cs" />
+    <Compile Include="StiActiveReportsRdlxHelper.Data.cs" />
+    <Compile Include="StiActiveReportsRdlxHelper.Expression.cs" />
+    <Compile Include="StiActiveReportsRdlxHelper.Items.cs" />
+    <Compile Include="StiActiveReportsRdlxHelper.Regions.cs" />
+    <Compile Include="StiActiveReportsRdlxHelper.Style.cs" />
+    <Compile Include="StiActiveReportsRdlxHelper.Tablix.cs" />
+    <Compile Include="StiActiveReportsRdlxHelper.cs" />
+    <Compile Include="StiRdlxDataSet.cs" />
+    <Compile Include="StiRdlxExpressionState.cs" />
+    <Compile Include="StiRdlxNode.cs" />
+    <Compile Include="StiRdlxReader.cs" />
+    <Compile Include="StiRdlxScope.cs" />
+    <Compile Include="StiRdlxTablixContext.cs" />
+    <Compile Include="StiRdlxTablixHeader.cs" />
+    <Compile Include="StiRdlxToken.cs" />
     <Compile Include="IStiTreeLog.cs" />
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>

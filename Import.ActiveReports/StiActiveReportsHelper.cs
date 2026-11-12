@@ -1704,6 +1704,10 @@ namespace Stimulsoft.Report.Import
         #region Methods.Import
         public static StiImportResult Import(byte[] bytes)
         {
+            // An RDLX report, XML of ActiveReports.NET or JSON of ActiveReportsJS, has its own import.
+            if (StiActiveReportsRdlxHelper.GetFormat(bytes) != StiActiveReportsFormat.Rpx)
+                return StiActiveReportsRdlxHelper.Import(bytes);
+
             var currentCulture = Thread.CurrentThread.CurrentCulture;
 
             try
