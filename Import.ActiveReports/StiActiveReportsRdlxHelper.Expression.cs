@@ -349,6 +349,22 @@ namespace Stimulsoft.Report.Import
                     break;
             }
 
+            // DateTime.Now and DateTime.Today, with parentheses or without, are the variables Time and Today.
+            if (lower == "datetime" && state.IsOperator(".") && state.IsType(1, StiRdlxTokenType.Identifier))
+            {
+                var property = state.Tokens[state.Index + 1].Text.ToLowerInvariant();
+
+                if (property == "now" || property == "today")
+                {
+                    state.Index += 2;
+
+                    if (state.IsType(0, StiRdlxTokenType.OpenParen) && state.IsType(1, StiRdlxTokenType.CloseParen))
+                        state.Index += 2;
+
+                    return property == "now" ? "Time" : "Today";
+                }
+            }
+
             // DateTime.Parse(value): a column of dates is a date already.
             if (lower == "datetime" && state.IsOperator(".") && state.IsType(1, StiRdlxTokenType.Identifier) &&
                 state.IsType(2, StiRdlxTokenType.OpenParen) &&
@@ -483,10 +499,42 @@ namespace Stimulsoft.Report.Import
                     return ConvertGlobal(member.ToLowerInvariant()) ?? member;
 
                 case "reportitems":
-                    return member + ".Text";
+                    return ConvertReportItem(state, member);
 
                 default:
                     return "\"\"";
+            }
+        }
+
+        /// <summary>
+        /// ReportItems!Name.Value is the value of another text box. The text of a component of Stimulsoft is
+        /// a string, so a value that is counted by an expression is taken as this expression itself, a sum
+        /// of two such values stays a sum of numbers.
+        /// </summary>
+        private string ConvertReportItem(StiRdlxExpressionState state, string name)
+        {
+            string value;
+            if (!itemValues.TryGetValue(name, out value) || reportItemDepth >= MaxReportItemDepth)
+                return name + ".Text";
+
+            var isTemplate = isJson && value.StartsWith("{") && value.EndsWith("}") &&
+                FindCloseBrace(value, 0) == value.Length - 1;
+
+            if (!value.StartsWith("=") && !isTemplate)
+                return name + ".Text";
+
+            reportItemDepth++;
+
+            try
+            {
+                var inner = isTemplate ? value.Substring(1, value.Length - 2) : value.Substring(1);
+
+                return "(" + ConvertExpression(inner, state.Scope, isTemplate: isTemplate,
+                    allowBandMarker: state.AllowBandMarker) + ")";
+            }
+            finally
+            {
+                reportItemDepth--;
             }
         }
 
@@ -667,6 +715,14 @@ namespace Stimulsoft.Report.Import
                 case "todatetime":
                     return ConvertToDate(first);
 
+                case "year":
+                case "month":
+                case "day":
+                    if (arguments.Count == 1)
+                        return ToTitle(lower) + "(" + ConvertDateArgument(first) + ")";
+
+                    break;
+
                 case "monthname":
                     if (first.StartsWith("Month(") && first.EndsWith(")") && first.IndexOf(')') == first.Length - 1)
                         return "MonthName(" + first.Substring(6, first.Length - 7) + ")";
@@ -712,9 +768,6 @@ namespace Stimulsoft.Report.Import
                 case "sqrt":
                 case "sign":
                 case "truncate":
-                case "year":
-                case "month":
-                case "day":
                 case "dateserial":
                     return ToTitle(lower) + "(" + string.Join(", ", arguments) + ")";
 
@@ -765,8 +818,28 @@ namespace Stimulsoft.Report.Import
         /// </summary>
         private string ConvertTotal(StiRdlxExpressionState state, string function, List<string> arguments)
         {
+            bool isWholeSource;
+            var inner = ConvertTotalArguments(state, function, arguments, out isWholeSource);
+
+            if (inner.EndsWith(", "))
+                inner = inner.Substring(0, inner.Length - 2);
+
+            return (isWholeSource ? "Totals." : "") + function + "(" + inner + ")";
+        }
+
+        /// <summary>
+        /// The arguments of a converted total: the band or the data source, when it has to be named, and the
+        /// value. A total of the whole data region that stands inside this region, on a band of a group,
+        /// names the data source: a total of a band is counted there for the current group only, a total of
+        /// a data source is counted for all its rows.
+        /// </summary>
+        private string ConvertTotalArguments(StiRdlxExpressionState state, string function, List<string> arguments,
+            out bool isWholeSource)
+        {
             StiRdlxDataSet dataSet = null;
             var hasScope = arguments.Count >= 2 && IsStringLiteral(arguments[arguments.Count - 1]);
+
+            isWholeSource = false;
 
             if (hasScope)
             {
@@ -774,14 +847,24 @@ namespace Stimulsoft.Report.Import
                 dataSet = FindDataSet(scopeName);
                 arguments = arguments.GetRange(0, arguments.Count - 1);
 
-                // Stimulsoft has no total of all the rows of a band that could stand on a band of a group.
                 var isWholeRegion = regionNames.Contains(scopeName) ||
                     dataSet != null && dataSet == state.Scope.DataSet;
 
                 if (state.Scope.IsRegion && isWholeRegion)
                 {
-                    Warn($"A total with the scope '{scopeName}' stands inside a data region. On a band of a group " +
-                        "Stimulsoft counts it for the current group, not for all the rows of the region.");
+                    var wholeSet = dataSet ?? state.Scope.DataSet;
+
+                    // The rows of a nested data set are the rows of one parent row, not all the rows of the source.
+                    if (wholeSet != null && wholeSet.Parent == null)
+                    {
+                        dataSet = wholeSet;
+                        isWholeSource = true;
+                    }
+                    else
+                    {
+                        Warn($"A total with the scope '{scopeName}' stands inside a data region. On a band of " +
+                            "a group Stimulsoft counts it for the current group, not for all the rows of the region.");
+                    }
                 }
             }
 
@@ -792,13 +875,14 @@ namespace Stimulsoft.Report.Import
 
             var marker = "";
 
-            if (state.AllowBandMarker && dataSet != null && (!state.Scope.IsRegion || state.Scope.DataSet != dataSet))
+            if (isWholeSource)
+                marker = dataSet.SourceName + ", ";
+
+            else if (state.AllowBandMarker && dataSet != null &&
+                (!state.Scope.IsRegion || state.Scope.DataSet != dataSet))
                 marker = BandMarkerStart + dataSet.Name + BandMarkerEnd;
 
-            if (function == "Count")
-                return "Count(" + marker + ")";
-
-            return function + "(" + marker + expression + ")";
+            return function == "Count" ? marker : marker + expression;
         }
 
         /// <summary>
@@ -832,12 +916,47 @@ namespace Stimulsoft.Report.Import
                 return null;
 
             // The value and the scope go the way of a plain total, so the band of the total is found the same.
-            var total = ConvertTotal(state, name, arguments.GetRange(2, arguments.Count - 2));
-            var inner = total.Substring(name.Length + 1, total.Length - name.Length - 2);
+            bool isWholeSource;
+            var inner = ConvertTotalArguments(state, name, arguments.GetRange(2, arguments.Count - 2),
+                out isWholeSource);
+
+            if (isWholeSource)
+                return ConvertSourceAggregateIf(name, inner, arguments[0]);
 
             return name == "Count"
                 ? "CountIf(" + inner + arguments[0] + ")"
                 : name + "If(" + inner + ", " + arguments[0] + ")";
+        }
+
+        /// <summary>
+        /// A total by a condition over all the rows of a data source. Only the functions with the prefix
+        /// "Totals." keep the data source on a band of a group, and they have no form with a condition, so
+        /// the condition goes into the value. The inner text is "Source, value" or "Source, " for Count.
+        /// </summary>
+        private string ConvertSourceAggregateIf(string name, string inner, string condition)
+        {
+            var comma = inner.IndexOf(", ", StringComparison.Ordinal);
+            var source = inner.Substring(0, comma);
+            var value = inner.Substring(comma + 2);
+            var count = "Totals.Sum(" + source + ", IIF(" + condition + ", 1, 0))";
+
+            switch (name)
+            {
+                case "Count":
+                    return count;
+
+                case "Sum":
+                    return "Totals.Sum(" + source + ", IIF(" + condition + ", " + value + ", 0))";
+
+                case "Avg":
+                    return "(Totals.Sum(" + source + ", IIF(" + condition + ", " + value + ", 0)) / " + count + ")";
+
+                default:
+                    Warn($"The total {name} by a condition over all the rows of '{source}' is counted for " +
+                        "the current group.");
+
+                    return name + "If(" + value + ", " + condition + ")";
+            }
         }
 
         /// <summary>
@@ -924,6 +1043,41 @@ namespace Stimulsoft.Report.Import
         private string ConvertToDate(string expression)
         {
             return IsDateColumn(expression) ? expression : "DateTime.Parse(ToString(" + expression + "))";
+        }
+
+        /// <summary>
+        /// The argument of a function that takes a date. A column of texts or of an unknown type, as the
+        /// columns of a service are, is parsed: the JSON database leaves a date written without the time
+        /// as a text.
+        /// </summary>
+        private string ConvertDateArgument(string expression)
+        {
+            var type = GetColumnType(expression);
+
+            return type == typeof(string) || type == typeof(object)
+                ? "DateTime.Parse(ToString(" + expression + "))"
+                : expression;
+        }
+
+        /// <summary>
+        /// The type of the column when the converted expression is a column of a data source, else null.
+        /// </summary>
+        private Type GetColumnType(string expression)
+        {
+            var dot = expression.IndexOf('.');
+            if (dot <= 0)
+                return null;
+
+            foreach (var dataSet in dataSetList)
+            {
+                if (dataSet.Source == null || dataSet.SourceName != expression.Substring(0, dot))
+                    continue;
+
+                var column = dataSet.Source.Columns[expression.Substring(dot + 1)];
+                return column == null ? null : column.Type;
+            }
+
+            return null;
         }
 
         /// <summary>

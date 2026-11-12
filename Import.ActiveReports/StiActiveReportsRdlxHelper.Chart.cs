@@ -45,7 +45,8 @@ namespace Stimulsoft.Report.Import
     /// Values, Category and Details. Both give a chart with a series per value of the plot.
     /// A chart of ActiveReports groups the rows by the category and shows a total of each group, a chart of
     /// Stimulsoft shows a point per row. So when the data of the chart is known at the import, the totals
-    /// are counted here and written into a table of the report data, the chart reads this table.
+    /// are counted here and written into a table of the report data, the chart reads this table. Otherwise
+    /// a data transformation counts them when the report is built.
     /// </summary>
     public partial class StiActiveReportsRdlxHelper
     {
@@ -77,7 +78,8 @@ namespace Stimulsoft.Report.Import
                     chart.FilterOn = true;
                 }
 
-                columns = CreateChartTable(chart, node, dataSet, chartScope);
+                columns = CreateChartTable(chart, node, dataSet, chartScope) ??
+                    CreateChartTransformation(chart, node, dataSet, chartScope);
 
                 // The table of the chart is counted of the filtered rows, the chart needs no filters.
                 if (columns != null)
@@ -107,8 +109,8 @@ namespace Stimulsoft.Report.Import
             }
             else if (columns == null && dataSet != null)
             {
-                Warn($"The values of the chart '{node.Get("Name")}' are not grouped by the category: its data " +
-                    "is not known at the import or its expressions are not plain fields.");
+                Warn($"The values of the chart '{node.Get("Name")}' are not grouped by the category: the chart " +
+                    "is filtered, its plots have different categories or its expressions are too complex.");
             }
 
             var header = node.Child("Header");
@@ -248,41 +250,12 @@ namespace Stimulsoft.Report.Import
 
             var rows = FilterRows(tableRows, filters, dataSet, isTable: true);
 
-            string category = null;
-            var seriesKey = "";
+            string category;
+            string seriesKey;
             var values = new List<string>();
 
-            foreach (var plot in node.Items("Plots"))
-            {
-                var encodings = plot.Child("Encodings");
-                var plotCategory = GetPlotCategory(plot, encodings);
-                var plotKey = GetPlotSeriesKey(plot, encodings);
-
-                if (string.IsNullOrEmpty(plotCategory))
-                {
-                    plotCategory = plotKey;
-                    plotKey = null;
-                }
-
-                if (IsPointPlot(plot) || string.IsNullOrEmpty(plotCategory))
-                    return null;
-
-                plotCategory = StripTotal(ConvertToExpression(plotCategory, scope));
-                plotKey = string.IsNullOrEmpty(plotKey) ? "" : StripTotal(ConvertToExpression(plotKey, scope));
-
-                if (category != null && (category != plotCategory || seriesKey != plotKey))
-                    return null;
-
-                category = plotCategory;
-                seriesKey = plotKey;
-
-                foreach (var value in GetPlotValues(plot, encodings))
-                {
-                    var expression = ConvertToExpression(value.Value, scope);
-                    if (!values.Contains(expression))
-                        values.Add(expression);
-                }
-            }
+            if (!CollectChartExpressions(node, scope, out category, out seriesKey, values))
+                return null;
 
             var prefix = dataSet.SourceName + ".";
             var functions = new string[values.Count];
@@ -378,6 +351,154 @@ namespace Stimulsoft.Report.Import
             chart.DataSourceName = name;
 
             return columns;
+        }
+
+        /// <summary>
+        /// Collects the converted expressions of the category, of the series and of the values of a chart.
+        /// Returns false when they can not be put into one table: a plot has no category or is a plot of
+        /// points, or the plots have different categories.
+        /// </summary>
+        private bool CollectChartExpressions(StiRdlxNode node, StiRdlxScope scope, out string category,
+            out string seriesKey, List<string> values)
+        {
+            category = null;
+            seriesKey = "";
+
+            foreach (var plot in node.Items("Plots"))
+            {
+                var encodings = plot.Child("Encodings");
+                var plotCategory = GetPlotCategory(plot, encodings);
+                var plotKey = GetPlotSeriesKey(plot, encodings);
+
+                if (string.IsNullOrEmpty(plotCategory))
+                {
+                    plotCategory = plotKey;
+                    plotKey = null;
+                }
+
+                if (IsPointPlot(plot) || string.IsNullOrEmpty(plotCategory))
+                    return false;
+
+                plotCategory = StripTotal(ConvertToExpression(plotCategory, scope));
+                plotKey = string.IsNullOrEmpty(plotKey) ? "" : StripTotal(ConvertToExpression(plotKey, scope));
+
+                if (category != null && (category != plotCategory || seriesKey != plotKey))
+                    return false;
+
+                category = plotCategory;
+                seriesKey = plotKey;
+
+                foreach (var value in GetPlotValues(plot, encodings))
+                {
+                    var expression = ConvertToExpression(value.Value, scope);
+                    if (!values.Contains(expression))
+                        values.Add(expression);
+                }
+            }
+
+            return category != null && values.Count > 0;
+        }
+
+        /// <summary>
+        /// The totals of a chart whose rows are not known at the import, or whose expressions are not plain
+        /// fields, are counted when the report is built: a data transformation groups the rows of the data
+        /// source by the category and the series and counts the values. Returns the columns of the
+        /// transformation by the expressions they hold, null when it can not be made.
+        /// </summary>
+        private Dictionary<string, string> CreateChartTransformation(StiChart chart, StiRdlxNode node,
+            StiRdlxDataSet dataSet, StiRdlxScope scope)
+        {
+            // The filters of the chart and of the data set are not applied to the rows of a transformation.
+            if (dataSet.Source == null || node.Items("Filters").Count > 0 ||
+                dataSet.Node.Items("Filters").Count > 0 && !dataSet.IsFiltered)
+                return null;
+
+            string category;
+            string seriesKey;
+            var values = new List<string>();
+
+            if (!CollectChartExpressions(node, scope, out category, out seriesKey, values))
+                return null;
+
+            var prefix = dataSet.SourceName + ".";
+            var categoryExpression = ToDataExpression(category, prefix);
+            var seriesExpression = seriesKey.Length == 0 ? "" : ToDataExpression(seriesKey, prefix);
+
+            if (categoryExpression == null || seriesExpression == null)
+                return null;
+
+            var measures = new List<string>();
+
+            foreach (var value in values)
+            {
+                var measure = ToDataExpression(value == "Count()" ? "Count(" + category + ")" : value, prefix);
+                if (measure == null)
+                    return null;
+
+                // A value without a total function is summed, as a chart of ActiveReports does.
+                var hasTotal = Regex.IsMatch(measure, @"\b(Sum|Avg|Count|Min|Max)\(");
+                measures.Add(hasTotal ? measure : "Sum(" + measure + ")");
+            }
+
+            var name = CreateName(node.Get("Name", "Chart") + "Data");
+            var transformation = new StiDataTransformation(name, name);
+            var columns = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            AddTransformationColumn(transformation, ChartCategoryColumn, categoryExpression,
+                StiDataTransformationMode.Dimension);
+            columns[category] = name + "." + ChartCategoryColumn;
+
+            if (seriesExpression.Length > 0)
+            {
+                AddTransformationColumn(transformation, ChartSeriesColumn, seriesExpression,
+                    StiDataTransformationMode.Dimension);
+                columns[seriesKey] = name + "." + ChartSeriesColumn;
+            }
+
+            for (var index = 0; index < values.Count; index++)
+            {
+                var column = ChartValueColumn + (index + 1);
+
+                AddTransformationColumn(transformation, column, measures[index], StiDataTransformationMode.Measure);
+                columns[values[index]] = name + "." + column;
+            }
+
+            report.Dictionary.DataSources.Add(transformation);
+            chart.DataSourceName = name;
+
+            return columns;
+        }
+
+        private static void AddTransformationColumn(StiDataTransformation transformation, string name,
+            string expression, StiDataTransformationMode mode)
+        {
+            var type = mode == StiDataTransformationMode.Measure ? typeof(decimal) : typeof(object);
+
+            transformation.Columns.Add(new StiDataTransformationColumn(name, name, type, expression)
+            {
+                Mode = mode
+            });
+        }
+
+        /// <summary>
+        /// Makes an expression of a data transformation of a converted expression. Returns null when the
+        /// expression has more than the columns of the data source, numbers, texts, arithmetic and the
+        /// functions that the transformations have too.
+        /// </summary>
+        private static string ToDataExpression(string expression, string prefix)
+        {
+            // The functions of the transformations take a date written as a text.
+            var result = Regex.Replace(expression, @"DateTime\.Parse\(ToString\((\w+\.\w+)\)\)", "$1");
+
+            var rest = Regex.Replace(result, @"""[^""]*""", "");
+            var columns = Regex.Replace(rest, Regex.Escape(prefix) + @"\w+", "");
+
+            if (columns == rest)
+                return null;
+
+            rest = Regex.Replace(columns, @"\b(Sum|Avg|Count|Min|Max|Year|Month|Day|MonthName|Round|Abs)\(", "(");
+
+            return Regex.IsMatch(rest, @"^[\d\s.+\-*/(),]*$") ? result : null;
         }
 
         /// <summary>

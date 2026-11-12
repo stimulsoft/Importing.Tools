@@ -47,7 +47,8 @@ namespace Stimulsoft.Report.Import
     /// a file beside the report (jsondoc, endpoint, CSV) - is read here: the query of every data set is applied
     /// and its rows are written into a JSON resource of the report, a table per data set. So the imported
     /// report keeps its data and does not depend on the query syntax of ActiveReports.
-    /// A data set whose data is on a server gets a JSON database with the address of the service.
+    /// A data set whose data is on a server gets a JSON database with the address of the service. The import
+    /// itself never asks a server: the table of such a data set is named by the path of its query.
     /// </summary>
     public partial class StiActiveReportsRdlxHelper
     {
@@ -164,6 +165,8 @@ namespace Stimulsoft.Report.Import
                 if (string.IsNullOrEmpty(name) || dataSets.ContainsKey(name))
                     continue;
 
+                NormalizeFieldNames(node);
+
                 var dataSet = new StiRdlxDataSet(name, node);
                 dataSet.SourceName = CreateName(name);
                 dataSets[name] = dataSet;
@@ -205,6 +208,26 @@ namespace Stimulsoft.Report.Import
 
             report.Dictionary.Resources.Add(new StiResource(EmbeddedDataName, StiResourceType.Json, bytes));
             report.Dictionary.Databases.Add(new StiJsonDatabase(EmbeddedDataName, "resource://" + EmbeddedDataName));
+        }
+
+        /// <summary>
+        /// A field whose name has spaces or signs is written in brackets and quotes, ['Net Income'], both
+        /// as the name and as the data field. The brackets are taken off: the name is 'Net Income'.
+        /// </summary>
+        private static void NormalizeFieldNames(StiRdlxNode dataSet)
+        {
+            foreach (var field in dataSet.Items("Fields"))
+            {
+                foreach (var node in field.Nodes)
+                {
+                    var isName = string.Equals(node.Name, "Name", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(node.Name, "DataField", StringComparison.OrdinalIgnoreCase);
+
+                    if (isName && node.Value != null && node.Value.StartsWith("['") && node.Value.EndsWith("']") &&
+                        node.Value.Length > 4)
+                        node.Value = node.Value.Substring(2, node.Value.Length - 4);
+                }
+            }
         }
 
         private StiRdlxDataSet FindDataSet(string name)
@@ -1086,10 +1109,7 @@ namespace Stimulsoft.Report.Import
             return new StiDataTableSource(databaseName + "." + table, dataSet.SourceName, dataSet.Name);
         }
 
-        /// <summary>
-        /// The name of the table that the JSON database of Stimulsoft makes of the array the path points to.
-        /// </summary>
-        private static string GetTableName(string path)
+        private static List<string> GetPathNames(string path)
         {
             var names = new List<string>();
 
@@ -1098,7 +1118,22 @@ namespace Stimulsoft.Report.Import
                 names.Add(match.Value);
             }
 
-            return names.Count == 0 ? "root" : string.Join("_", names);
+            return names;
+        }
+
+        /// <summary>
+        /// The name of the table that the JSON database of Stimulsoft makes of the array the path points to.
+        /// </summary>
+        private static string GetTableName(string path)
+        {
+            var names = GetPathNames(path);
+            if (names.Count == 0)
+                return "root";
+
+            // An answer of OData is an object with the rows in "value" and with plain properties beside it.
+            // For such an object the JSON database makes the table "root" of the properties and names the
+            // tables of its arrays with this prefix.
+            return names[0] == "value" ? "root_" + string.Join("_", names) : string.Join("_", names);
         }
 
         private static Type GetHintType(string hint)
@@ -1190,6 +1225,7 @@ namespace Stimulsoft.Report.Import
                 table.Add(row);
             }
 
+            NormalizeNumbers(table, dataSet, dataFields, types);
             NormalizeDates(table, dataSet, dataFields, types);
             embeddedData[dataSet.SourceName] = table;
 
@@ -1260,6 +1296,77 @@ namespace Stimulsoft.Report.Import
                 (type == typeof(long) || type == typeof(decimal));
 
             types[field] = isNumber ? typeof(decimal) : typeof(string);
+        }
+
+        /// <summary>
+        /// A text column whose values are all numbers becomes a number column when the report counts with
+        /// it: multiplies, divides, subtracts or sums it. A column of codes that only look like numbers, and
+        /// that the report compares with texts, stays a text column.
+        /// </summary>
+        private void NormalizeNumbers(JArray table, StiRdlxDataSet dataSet, Dictionary<string, string> dataFields,
+            Dictionary<string, Type> types)
+        {
+            foreach (var field in dataFields.Keys)
+            {
+                Type type;
+                if (!types.TryGetValue(field, out type) || type != typeof(string) || !IsCountedField(field))
+                    continue;
+
+                var column = dataSet.Columns[field];
+                var numbers = new List<KeyValuePair<JObject, decimal>>();
+                var isNumber = true;
+                var isInteger = true;
+
+                foreach (JObject row in table)
+                {
+                    var value = row[column];
+                    if (value == null)
+                        continue;
+
+                    var text = value.ToString().Trim();
+                    decimal number;
+
+                    if (!Regex.IsMatch(text, @"^-?\d+(\.\d+)?$") || !decimal.TryParse(text, NumberStyles.Number,
+                        CultureInfo.InvariantCulture, out number))
+                    {
+                        isNumber = false;
+                        break;
+                    }
+
+                    if (text.Contains("."))
+                        isInteger = false;
+
+                    numbers.Add(new KeyValuePair<JObject, decimal>(row, number));
+                }
+
+                if (!isNumber || numbers.Count == 0)
+                    continue;
+
+                foreach (var pair in numbers)
+                {
+                    pair.Key[column] = isInteger ? new JValue((long)pair.Value) : new JValue(pair.Value);
+                }
+
+                types[field] = isInteger ? typeof(long) : typeof(decimal);
+            }
+        }
+
+        /// <summary>
+        /// The report counts with the field: an expression multiplies, divides or subtracts it, or takes its
+        /// sum or average.
+        /// </summary>
+        private bool IsCountedField(string field)
+        {
+            var name = Regex.Escape(field);
+            var value = @"Fields!" + name + @"\.Value";
+            var options = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+
+            return Regex.IsMatch(expressionText, value + @"\s*[*/-]", options) ||
+                Regex.IsMatch(expressionText, @"[*/-]\s*" + value, options) ||
+                Regex.IsMatch(expressionText, @"\b(Sum|Avg)\(\s*" + value, options) ||
+                Regex.IsMatch(expressionText, @"\{[^{}]*(?<![\w.!])" + name + @"\s*[*/][^{}]*\}", options) ||
+                Regex.IsMatch(expressionText, @"\{[^{}]*[*/]\s*" + name + @"(?![\w.])[^{}]*\}", options) ||
+                Regex.IsMatch(expressionText, @"\{[^{}]*\b(Sum|Avg)\(\s*" + name + @"\s*[,)][^{}]*\}", options);
         }
 
         /// <summary>

@@ -68,7 +68,6 @@ namespace Stimulsoft.Report.Import
         /// </summary>
         public string ParentField { get; set; }
 
-
         /// <summary>
         /// The rows read at the import, null when the data is not available at the import.
         /// </summary>

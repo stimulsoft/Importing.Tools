@@ -62,6 +62,16 @@ namespace Stimulsoft.Report.Import
         /// The difference of two coordinates, in hundredths of an inch, that is taken as none.
         /// </summary>
         private const double Tolerance = 0.5;
+
+        /// <summary>
+        /// A longer value of a property is data, not an expression.
+        /// </summary>
+        private const int MaxExpressionLength = 4000;
+
+        /// <summary>
+        /// The limit of the references of text boxes to one another, it stops a reference to itself.
+        /// </summary>
+        private const int MaxReportItemDepth = 8;
         #endregion
 
         #region Fields
@@ -70,6 +80,10 @@ namespace Stimulsoft.Report.Import
         private StiRdlxNode root;
         private bool isJson;
         private string dataFolder;
+        private string expressionText;
+        private int reportItemDepth;
+        private Dictionary<string, string> itemValues =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private HashSet<string> warnings = new HashSet<string>(StringComparer.Ordinal);
         private HashSet<string> regionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -110,6 +124,10 @@ namespace Stimulsoft.Report.Import
             if (!string.IsNullOrEmpty(language) && !language.StartsWith("="))
                 report.Culture = language;
 
+            var expressions = new StringBuilder();
+            CollectExpressions(root, expressions);
+            expressionText = expressions.ToString();
+
             CollectRegionNames(root);
             ProcessEmbeddedImages();
             ProcessParameters();
@@ -137,6 +155,25 @@ namespace Stimulsoft.Report.Import
         }
 
         /// <summary>
+        /// Collects the expressions of the report into one text, a line per expression: the use of a field
+        /// in them tells what its column holds.
+        /// </summary>
+        private void CollectExpressions(StiRdlxNode node, StringBuilder expressions)
+        {
+            // The data written in a connection string is not an expression, though it has braces.
+            var isExpression = node.Value != null && node.Value.Length < MaxExpressionLength &&
+                node.Name != "ConnectString" && (node.Value.StartsWith("=") || node.Value.Contains("{"));
+
+            if (isExpression)
+                expressions.Append(node.Value).Append('\n');
+
+            foreach (var child in node.Nodes)
+            {
+                CollectExpressions(child, expressions);
+            }
+        }
+
+        /// <summary>
         /// Collects the names of the data regions: a total may name one of them as its scope.
         /// </summary>
         private void CollectRegionNames(StiRdlxNode node)
@@ -144,6 +181,10 @@ namespace Stimulsoft.Report.Import
             var name = node.Get("Name");
             if (!string.IsNullOrEmpty(name) && (IsDataRegion(node) || node.IsType("Chart") || node.IsType("FixedPage")))
                 regionNames.Add(name);
+
+            // The values of the text boxes: an expression may refer to a text box by its name.
+            if (!string.IsNullOrEmpty(name) && node.IsType("Textbox") && node.Has("Value"))
+                itemValues[name] = node.Get("Value");
 
             foreach (var child in node.Nodes)
             {
