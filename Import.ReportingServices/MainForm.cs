@@ -367,29 +367,34 @@ namespace Import.Rdl
             {
                 StiTreeViewLog log = new StiTreeViewLog(this.treeViewLog);
 
-                log.OpenLog("Initialize ...");
-                Application.DoEvents();
-                StiReport report = new StiReport();
-                if (!string.IsNullOrWhiteSpace(tbStimulReportFile.Text)) report.ReportName = Path.GetFileNameWithoutExtension(tbStimulReportFile.Text);
-
-                log.CurrentNode.Text += "OK";
-                log.CloseLog();
                 log.OpenLog("Open RDL template file ...");
                 Application.DoEvents();
 
-                byte[] bytes = File.ReadAllBytes(tbRdlFile.Text);
-
-                XmlDocument doc = new XmlDocument();
-                doc.Load(new MemoryStream(bytes));
+                var bytes = File.ReadAllBytes(tbRdlFile.Text);
 
                 log.CurrentNode.Text += "OK";
                 log.CloseLog();
                 log.OpenLog("Converting ...");
                 Application.DoEvents();
 
-                StiReportingServicesHelper helper = new StiReportingServicesHelper() { ConvertSyntaxToCSharp = checkBoxConvertSyntaxToCSharp.Checked };
-                var errorList = new List<string>();
-                helper.ProcessRootNode(doc.DocumentElement, report, errorList);
+                StiReport report;
+                List<string> errorList;
+                if (checkBoxConvertSyntaxToCSharp.Checked)
+                {
+                    report = new StiReport();
+                    errorList = new List<string>();
+                    ImportToCSharp(bytes, report, errorList);
+                }
+                else
+                {
+                    //the shared data sources and data sets of the report are read from its folder
+                    var result = StiReportingServicesHelper.Import(bytes, Path.GetDirectoryName(tbRdlFile.Text));
+                    report = result.Report;
+                    errorList = result.Errors;
+                }
+
+                if (!string.IsNullOrWhiteSpace(tbStimulReportFile.Text))
+                    report.ReportName = Path.GetFileNameWithoutExtension(tbStimulReportFile.Text);
 
                 if (checkBoxSetLinked.Checked)
                 {
@@ -418,6 +423,22 @@ namespace Import.Rdl
                 report.Design();
                 #endif
             }
+        }
+
+        /// <summary>
+        /// The conversion of the expressions to C#, as before: the public import gives the expressions of VB, which
+        /// the interpretation runs as well.
+        /// </summary>
+        private static void ImportToCSharp(byte[] bytes, StiReport report, List<string> errorList)
+        {
+            var doc = new XmlDocument();
+            using (var stream = new MemoryStream(bytes))
+            {
+                doc.Load(stream);
+            }
+
+            var helper = new StiReportingServicesHelper { ConvertSyntaxToCSharp = true };
+            helper.ProcessRootNode(doc.DocumentElement, report, errorList);
         }
 
         private void Form1_FormClosed(object sender, FormClosedEventArgs e)

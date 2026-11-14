@@ -30,11 +30,13 @@
 using Stimulsoft.Base;
 using Stimulsoft.Base.Drawing;
 using Stimulsoft.Report;
+using Stimulsoft.Report.BarCodes;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Dictionary;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Xml;
 
@@ -110,6 +112,20 @@ namespace Stimulsoft.Report.Import
                 }
             }
 
+            //a barcode of Bold Reports is a barcode of Stimulsoft in the place of the item
+            var barCode = CreateBoldBarCode(baseNode, type, component, dataset);
+            if (barCode != null)
+            {
+                container.Components.Add(barCode);
+                return;
+            }
+
+            if (string.Equals(type, "PDFSignature", StringComparison.OrdinalIgnoreCase))
+            {
+                container.Components.Add(CreateBoldPdfSignature(baseNode, component));
+                return;
+            }
+
             if (string.Equals(type, "BandedList", StringComparison.OrdinalIgnoreCase) && bandedListConfig != null)
             {
                 ProcessBandedList(customData, bandedListConfig, component, page, dataset);
@@ -127,6 +143,162 @@ namespace Stimulsoft.Report.Import
 
             container.Components.Add(component);
         }
+
+        #region Barcode
+        /// <summary>
+        /// Makes the barcode of a custom report item of Bold Reports, barcode or matrixbarcode, with the value,
+        /// the type and the text of its custom properties. Returns null for another item or an unknown type of the
+        /// barcode; such a barcode keeps its place as an empty panel and is reported.
+        /// </summary>
+        private StiBarCode CreateBoldBarCode(XmlNode baseNode, string type, StiPanel place, string dataset)
+        {
+            if (!string.Equals(type, "barcode", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(type, "matrixbarcode", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var propertiesNode = GetChildNode(baseNode, "CustomProperties");
+            if (propertiesNode != null)
+            {
+                foreach (XmlNode node in propertiesNode.ChildNodes)
+                {
+                    var name = GetChildText(node, "Name");
+                    if (!string.IsNullOrEmpty(name))
+                        properties[name] = GetChildNode(node, "Value")?.InnerText ?? string.Empty;
+                }
+            }
+
+            properties.TryGetValue("BarcodeType", out var barCodeTypeName);
+            var barCodeType = GetBoldBarCodeType(barCodeTypeName);
+            if (barCodeType == null)
+            {
+                ThrowError(null, null, $"Barcode type not supported: {barCodeTypeName}");
+                return null;
+            }
+
+            properties.TryGetValue("BarcodeValue", out var value);
+            properties.TryGetValue("DisplayBarcodeText", out var displayText);
+
+            var barCode = new StiBarCode
+            {
+                Name = place.Name,
+                Page = place.Page,
+                ClientRectangle = place.ClientRectangle,
+                BarCodeType = barCodeType,
+                ShowLabelText = !string.Equals(displayText, "false", StringComparison.OrdinalIgnoreCase),
+                Code = new StiBarCodeExpression(IsExpression(value) ? ConvertExpression(value, dataset) : value)
+            };
+
+            barCode.Enabled = place.Enabled;
+            foreach (StiAppExpression expression in place.Expressions)
+            {
+                barCode.Expressions.Add(expression);
+            }
+
+            return barCode;
+        }
+
+        /// <summary>
+        /// Makes the digital signature of a PDF of Bold Reports, PDFSignature, in the place of the item. Bold
+        /// Reports signs with the certificate of its server, named in the custom properties; the certificate of a
+        /// PDF of Stimulsoft is set in the export, so the name of the certificate is named in the list of errors.
+        /// </summary>
+        private StiPdfDigitalSignature CreateBoldPdfSignature(XmlNode baseNode, StiPanel place)
+        {
+            var signature = new StiPdfDigitalSignature(place.ClientRectangle)
+            {
+                Name = place.Name,
+                Page = place.Page,
+                Enabled = place.Enabled
+            };
+
+            foreach (StiAppExpression expression in place.Expressions)
+            {
+                signature.Expressions.Add(expression);
+            }
+
+            var certificate = GetChildNode(baseNode, "CustomProperties")?.ChildNodes.Cast<XmlNode>()
+                .Where(n => GetChildText(n, "Name") == "CertificateFileName")
+                .Select(n => GetChildText(n, "Value"))
+                .FirstOrDefault();
+            ThrowError(null, null,
+                $"Certificate of a PDF signature not imported, set it in the PDF export: {certificate}");
+
+            return signature;
+        }
+
+        /// <summary>
+        /// Returns the barcode type of Stimulsoft for the barcode type of Bold Reports, or null.
+        /// </summary>
+        private static StiBarCodeTypeService GetBoldBarCodeType(string name)
+        {
+            switch ((name ?? string.Empty).Replace(" ", string.Empty).Replace("-", string.Empty).ToLowerInvariant())
+            {
+                case "code39":
+                    return new StiCode39BarCodeType();
+
+                case "code39extended":
+                    return new StiCode39ExtBarCodeType();
+
+                case "code93":
+                    return new StiCode93BarCodeType();
+
+                case "code93extended":
+                    return new StiCode93ExtBarCodeType();
+
+                case "code128":
+                    return new StiCode128AutoBarCodeType();
+
+                case "code128a":
+                    return new StiCode128aBarCodeType();
+
+                case "code128b":
+                    return new StiCode128bBarCodeType();
+
+                case "code128c":
+                    return new StiCode128cBarCodeType();
+
+                case "code11":
+                    return new StiCode11BarCodeType();
+
+                case "codabar":
+                    return new StiCodabarBarCodeType();
+
+                case "ean13":
+                    return new StiEAN13BarCodeType();
+
+                case "ean8":
+                    return new StiEAN8BarCodeType();
+
+                case "interleaved2of5":
+                    return new StiInterleaved2of5BarCodeType();
+
+                case "upcbarcode":
+                case "upca":
+                    return new StiUpcABarCodeType();
+
+                case "msi":
+                    return new StiMsiBarCodeType();
+
+                case "qrbarcode":
+                case "qrcode":
+                    return new StiQRCodeBarCodeType();
+
+                case "datamatrix":
+                case "datamatrixbarcode":
+                    return new StiDataMatrixBarCodeType();
+
+                case "pdf417":
+                case "pdf417barcode":
+                    return new StiPdf417BarCodeType();
+
+                default:
+                    return null;
+            }
+        }
+        #endregion
 
         #region BandedList
         //A BandedList declares its report items inside CustomData and the bands of

@@ -32,16 +32,18 @@ using Stimulsoft.Base.Drawing;
 using Stimulsoft.Report;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Dictionary;
+using Stimulsoft.Report.Import.ReportingServices;
 using Stimulsoft.Report.Units;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
+using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Xml;
+using System.Xml.Linq;
 
 namespace Stimulsoft.Report.Import
 {
@@ -58,7 +60,30 @@ namespace Stimulsoft.Report.Import
         private StiReport report = null;
         private int flagCounter = 0;
         private Hashtable embeddedImages = new Hashtable();
-        private Hashtable fieldsNames = new Hashtable();
+        private Dictionary<string, string> fieldsNames =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private XmlNode reportNode;
+        private HashSet<StiText> generalAlignedTexts = new HashSet<StiText>();
+        private HashSet<string> inlinedReportItems = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private bool usesReportCode;
+
+        //the name of the text box being imported, Me.Value in its expressions is its own value
+        private string currentTextboxName;
+        #endregion
+
+        #region Properties
+        private string defaultFontFamily;
+        /// <summary>
+        /// The font of a text that sets no font. Reporting Services takes Arial, a report of the
+        /// new designer names its own font in DefaultFontFamily, Segoe UI as a rule.
+        /// </summary>
+        private string DefaultFontFamily
+        {
+            get
+            {
+                return string.IsNullOrWhiteSpace(defaultFontFamily) ? "Arial" : defaultFontFamily;
+            }
+        }
         #endregion
 
         #region Process Root node
@@ -66,6 +91,7 @@ namespace Stimulsoft.Report.Import
         {
             this.report = report;
             this.errorList = errorList;
+            reportNode = rootNode;
             report.Unit = unitType;
             StiPage page = report.Pages[0];
             page.PaperSize = System.Drawing.Printing.PaperKind.Letter;
@@ -131,6 +157,15 @@ namespace Stimulsoft.Report.Import
 
                     case "Code":
                         code = GetNodeTextValue(node);
+                        break;
+
+                    case "df:DefaultFontFamily":
+                        defaultFontFamily = GetNodeTextValue(node);
+                        break;
+
+                    case "Language":
+                        if (flagCounter == 0)
+                            ProcessReportLanguage(node, report);
                         break;
                 }
             }
@@ -202,11 +237,19 @@ namespace Stimulsoft.Report.Import
                         report.ReportDescription = GetNodeTextValue(node);
                         break;
 
+                    case "Author":
+                        report.ReportAuthor = GetNodeTextValue(node);
+                        break;
+
+                    //the growing items of a container take its whitespace first, as the items of a container of
+                    //Stimulsoft do; the whitespace is never given up when they do not grow, so nothing to set
+                    case "ConsumeContainerWhitespace":
+                        break;
+
                     case "InteractiveHeight":
                     case "InteractiveWidth":
                     case "rd:GridSpacing":
                     case "rd:SnapToGrid":
-                    case "Language":    //???
                         //ignored or not implemented yet
                         break;
 
@@ -222,9 +265,12 @@ namespace Stimulsoft.Report.Import
                     case "EmbeddedImages":
                     case "Variables":
                     case "ReportParameters":
+                    case "Code":
                     case "Page":
                     case "PageHeader":
                     case "PageFooter":
+                    case "df:DefaultFontFamily":
+                    case "Language":
                         //processed in first pass
                         break;
 
@@ -233,6 +279,14 @@ namespace Stimulsoft.Report.Import
                         break;
                 }
             }
+
+            ReportUnresolvedUserSorts();
+            ApplyTextLanguages();
+            ApplyGaugePanelLayouts();
+            MergeListDetails();
+            ApplyBodyLayout();
+            ApplyShiftModes();
+            ApplyMergeTags();
 
             var size = new SizeD();
             GetMaxSizeRecursive(ref size, page);
@@ -271,9 +325,11 @@ namespace Stimulsoft.Report.Import
                 {
                     foreach (StiDataColumn column in ds.Columns)
                     {
+                        //a calculated field reads the fields of its own data source, a filtered data set
+                        //keeps it in the data source of the query
                         if (column is StiCalcDataColumn cdc)
                         {
-                            var st = ConvertExpression(cdc.Value, null);
+                            var st = ConvertExpression(cdc.Value, ds.Name);
                             cdc.Value = st.Substring(1, st.Length - 2);
                         }
                     }
@@ -301,10 +357,8 @@ namespace Stimulsoft.Report.Import
                 }
                 else
                 {
+                    //DateAdd is called as DateAndTime.DateAdd, known both to the compiler and to the parser
                     methods.AddRange(new string[] {
-                        "Public Function DateAdd(Interval As Microsoft.VisualBasic.DateInterval, Number As Double, DateValue As String) As DateTime",
-                        "    Return DateAdd(Interval, Number, System.Convert.ToString(DateValue))",
-                        "End Function",
                         "Protected Overloads Function Format(obj As Object) As string",
 		                "   Return obj.ToString()",
 		                "End Function"
@@ -316,7 +370,8 @@ namespace Stimulsoft.Report.Import
                     {
                         methods.Add(string.Empty);
                         methods.Add("#Region \"Code\"");
-                        methods.AddRange(Stimulsoft.Report.Export.StiExportUtils.SplitString(ReplaceFields(code, null), true));
+                        var vbCode = ConvertCode(code);
+                        methods.AddRange(Stimulsoft.Report.Export.StiExportUtils.SplitString(vbCode, true));
                         methods.Add("#End Region 'Code");
                     }
                 }
@@ -353,12 +408,6 @@ namespace Stimulsoft.Report.Import
             }
         }
 
-        private string CheckComponentName(StiReport report, string baseName)
-        {
-            string newName = StiNameCreation.CreateName(report, baseName, false, true, true);
-            if (newName == baseName) return baseName;
-            return newName;
-        }
         #endregion
 
         #region ReportSections
@@ -405,8 +454,13 @@ namespace Stimulsoft.Report.Import
             band.CanGrow = true;
             band.CanShrink = true;
             band.CountData = 1;
+
+            //the data regions of the body are the details of the band, Reporting Services prints the body
+            //when they have no rows
+            band.PrintIfDetailEmpty = true;
             band.Page = page;
             page.Components.Add(band);
+            bodyBands.Add(band);
 
             foreach (XmlNode node in baseNode.ChildNodes)
             {
@@ -442,6 +496,7 @@ namespace Stimulsoft.Report.Import
             maxHeight += 20;
             if (maxHeight < band.Height) band.Height = maxHeight;
 
+            SplitBodyByPageBreaks(band, page);
         }
         #endregion
 
@@ -509,20 +564,26 @@ namespace Stimulsoft.Report.Import
 
         private void ProcessReportParameterType(XmlNode baseNode, StiReport report)
         {
+            var name = baseNode.Attributes["Name"].Value;
             StiVariable var = new StiVariable();
-            var.Name = baseNode.Attributes["Name"].Value;
-            var.Alias = var.Name;
-            var.Category = "ReportParameters";
+            var.Name = GetParameterVariableName(report, name);
+            var.Alias = name;
+            var.Category = ParametersCategory;
             var.RequestFromUser = true;
 
             //first pass
             bool nullable = false;
+            var multiValue = false;
             foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
                 {
                     case "Nullable":
                         nullable = Convert.ToBoolean(GetNodeTextValue(node));
+                        break;
+
+                    case "MultiValue":
+                        multiValue = IsTrue(GetNodeTextValue(node));
                         break;
                 }
             }
@@ -534,7 +595,7 @@ namespace Stimulsoft.Report.Import
                 {
                     case "DataType":
                         string dataType = Convert.ToString(GetNodeTextValue(node));
-                        var.Type = GetTypeFromDataType(dataType, nullable);
+                        var.Type = GetTypeFromDataType(dataType, nullable, multiValue);
                         break;
 
                     case "Prompt":
@@ -542,7 +603,8 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     case "Hidden":
-                        var.RequestFromUser = Convert.ToBoolean(GetNodeTextValue(node));
+                        //a hidden parameter is not shown to the user
+                        var.RequestFromUser = !IsTrue(GetNodeTextValue(node));
                         break;
 
                     case "DefaultValue":
@@ -551,11 +613,16 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     case "Nullable":
+                    case "MultiValue":
                         //first pass
                         break;
 
                     case "AllowBlank":
                         //ignored or not implemented yet
+                        break;
+
+                    //the settings of Report Builder, as the notifications of the updates of a shared parameter
+                    case "cl:ComponentMetadata":
                         break;
 
                     default:
@@ -576,24 +643,96 @@ namespace Stimulsoft.Report.Import
                     case "ValidValues":
                         ProcessReportParameterValidValues(node, var);
                         break;
-
-
                 }
             }
 
+            if (multiValue)
+                ApplyListDefaultValue(baseNode, var);
+
             report.Dictionary.Variables.Add(var);
 
-            string baseField = $"Parameters!{var.Name}.Value";
+            string baseField = $"Parameters!{name}.Value";
             string newField = var.Name;
             fieldsNames[baseField] = newField;
+        }
 
-            //Get Label is not supported yet, so used Value
-            baseField = $"Parameters!{var.Name}.Label";
-            fieldsNames[baseField] = newField;
+        /// <summary>
+        /// A parameter with many values is a list variable, its items are checked in the dialog.
+        /// The default values of Reporting Services become the checked items: all the items when the
+        /// default values come from the same field as the valid values, which is the rule for a list
+        /// filled from a data set, and the listed items when both are given as values. Any other
+        /// default is not known before the report runs, it is named in the list of errors.
+        /// </summary>
+        private void ApplyListDefaultValue(XmlNode parameterNode, StiVariable var)
+        {
+            var defaultNode = GetChildNode(parameterNode, "DefaultValue");
+            if (defaultNode == null)
+                return;
+
+            var defaultReference = GetDataSetReferenceColumn(GetChildNode(defaultNode, "DataSetReference"));
+            var validReference = GetDataSetReferenceColumn(
+                GetChildNode(GetChildNode(parameterNode, "ValidValues"), "DataSetReference"));
+
+            if (defaultReference != null &&
+                string.Equals(defaultReference, validReference, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            var valuesNode = GetChildNode(defaultNode, "Values");
+            var keys = var.DialogInfo.Keys;
+
+            if (defaultReference == null && valuesNode != null)
+            {
+                var values = valuesNode.ChildNodes.Cast<XmlNode>()
+                    .Where(n => n.Name == "Value")
+                    .Select(GetNodeTextValue)
+                    .ToList();
+
+                if (!values.Any(IsExpression) && keys != null && keys.Length > 0)
+                {
+                    var.DialogInfo.CheckedStates = keys.Select(k => values.Contains(k)).ToArray();
+                    return;
+                }
+
+                //without the valid values the value of a list variable has no items to check, so the default
+                //values become the items, all checked
+                if (!values.Any(IsExpression) && validReference == null &&
+                    GetChildNode(parameterNode, "ValidValues") == null)
+                {
+                    var.DialogInfo.Keys = values.ToArray();
+                    var.DialogInfo.Values = values.ToArray();
+                    var.DialogInfo.CheckedStates = values.Select(v => true).ToArray();
+                    return;
+                }
+            }
+
+            ThrowError(null, null, $"Default values of a parameter with many values not imported: {var.Name}");
+        }
+
+        /// <summary>
+        /// Returns the column of a DataSetReference node as DataSet.Field, or null.
+        /// </summary>
+        private string GetDataSetReferenceColumn(XmlNode referenceNode)
+        {
+            var dataSetNode = GetChildNode(referenceNode, "DataSetName");
+            var fieldNode = GetChildNode(referenceNode, "ValueField");
+
+            if (dataSetNode == null || fieldNode == null)
+                return null;
+
+            return $"{GetNodeTextValue(dataSetNode)}.{GetNodeTextValue(fieldNode)}";
+        }
+
+        private static XmlNode GetChildNode(XmlNode node, string name)
+        {
+            return node?.ChildNodes.Cast<XmlNode>().FirstOrDefault(n => n.Name == name);
         }
 
         private void ProcessReportParameterDefaultValue(XmlNode baseNode, StiVariable var)
         {
+            //the default values of a list are the checked items, see ApplyListDefaultValue
+            if (IsListType(var.Type))
+                return;
+
             foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
@@ -793,7 +932,39 @@ namespace Stimulsoft.Report.Import
             }
 
             var.InitBy = StiVariableInitBy.Expression;
-            var.Value = $"{dataSetName}.{fieldName}";
+            var column = GetColumnReference(dataSetName, fieldName);
+            var.Value = ConvertToVariableType(column, var.Type);
+        }
+
+        /// <summary>
+        /// Returns the reference to the column in the code of the report. The code generator renames
+        /// a name that is a keyword of the language of the report, Date turns into Date_ in Visual
+        /// Basic, so the reference is corrected the same way.
+        /// </summary>
+        private string GetColumnReference(string dataSetName, string fieldName)
+        {
+            var dataSource = StiNameValidator.CorrectName(dataSetName, report);
+            var column = StiNameValidator.CorrectName(fieldName, report);
+
+            return $"{dataSource}.{column}";
+        }
+
+        /// <summary>
+        /// The type of a field is free of the type of the parameter it fills, a String parameter
+        /// often takes a Guid field. The value is converted, else the assignment does not compile.
+        /// </summary>
+        private static string ConvertToVariableType(string expression, Type type)
+        {
+            if (type == typeof(string))
+                return $"System.Convert.ToString({expression})";
+
+            if (type == typeof(int) || type == typeof(int?))
+                return $"System.Convert.ToInt32({expression})";
+
+            if (type == typeof(DateTime) || type == typeof(DateTime?))
+                return $"System.Convert.ToDateTime({expression})";
+
+            return expression;
         }
         #endregion
 
@@ -842,6 +1013,12 @@ namespace Stimulsoft.Report.Import
 
                     case "ColumnSpacing":
                         page.ColumnGaps = ToHi(GetNodeTextValue(node));
+                        break;
+
+                    //the body is printed in the columns of the page, the width of a column is the width of the body
+                    case "Columns":
+                        if (int.TryParse(GetNodeTextValue(node), out var columns) && columns > 1)
+                            page.Columns = columns;
                         break;
 
                     case "PageHeader":
@@ -987,31 +1164,90 @@ namespace Stimulsoft.Report.Import
 
         private XmlNode ProcessVisibility(XmlNode baseNode, StiComponent component, string dataSet)
         {
+            XmlNode result = null;
+
             foreach (XmlNode node in baseNode.ChildNodes)
             {
                 switch (node.Name)
                 {
+                    case "ToggleItem":
+                        //a printed report of Reporting Services shows the initial visibility, which is kept
+                        ThrowError(null, null,
+                            $"Toggle not supported, the initial visibility is used: {GetNodeTextValue(node)}");
+                        break;
+
                     case "Hidden":
                         var value = GetNodeTextValue(node);
                         if (IsExpression(value))
                         {
-                            var expr = ConvertExpression(value, dataSet).Trim();
-                            expr = expr.Substring(1, expr.Length - 2);
-                            component.Expressions.Add(new StiAppExpression("Enabled", expr));
+                            var expr = ConvertPrintExpression(value, dataSet, out var usesCode);
+                            if (expr != null)
+                                AddPrintExpression(component, "Enabled", expr, usesCode);
                         }
                         else
                         {
                             if (IsTrue(value))
                                 component.Enabled = false;
                         }
-                        return baseNode;
+                        result = baseNode;
+                        break;
 
                     default:
                         ThrowError(baseNode.Name, node.Name);
                         break;
                 }
             }
-            return null;
+            return result;
+        }
+
+        /// <summary>
+        /// Converts an expression of a property counted when the item prints, the visibility or a color, and
+        /// tells whether it calls the functions of the code of the report. An empty expression gives null, the
+        /// property keeps its value then.
+        /// </summary>
+        private string ConvertPrintExpression(string value, string dataSet, out bool usesCode)
+        {
+            //ConvertIdentifier sets the flag when the expression calls Code.X, an inlined text box included
+            usesReportCode = false;
+            var expression = ConvertExpression(value, dataSet).Trim();
+            usesCode = usesReportCode;
+
+            expression = expression.Substring(1, expression.Length - 2).Trim();
+            return expression.Length > 0 ? expression : null;
+        }
+
+        /// <summary>
+        /// Sets Enabled by the expression of Hidden, or Brush and TextBrush by the expression of a color, when
+        /// the component prints. The parser of the report counts the expressions of a component, but it does
+        /// not know the functions of the code of the report, so an expression that calls them goes to the
+        /// BeforePrint event: it is compiled with the code and runs right after the expressions.
+        /// </summary>
+        private void AddPrintExpression(StiComponent component, string property, string expression, bool usesCode)
+        {
+            var isEnabled = property == "Enabled";
+            var not = ConvertSyntaxToCSharp ? "!" : "Not ";
+
+            //Hidden is the opposite of Enabled; Nothing means a visible item, as in Reporting Services
+            var value = isEnabled
+                ? $"{not}System.Convert.ToBoolean({expression})"
+                : $"SolidBrushValue({expression})";
+
+            if (!usesCode || ConvertSyntaxToCSharp)
+            {
+                component.Expressions.Add(new StiAppExpression(property, value));
+                return;
+            }
+
+            var target = isEnabled ? "StiComponent" : property == "Brush" ? "IStiBrush" : "IStiTextBrush";
+            if (!isEnabled)
+                value = "Stimulsoft.Report.Dictionary.StiFunctionsDrawing." + value;
+
+            var statement = $"CType(sender, Stimulsoft.Report.Components.{target}).{property} = {value}";
+            var script = component.BeforePrintEvent.Script;
+            if (!string.IsNullOrEmpty(script))
+                statement = script + Environment.NewLine + statement;
+
+            component.BeforePrintEvent.Script = statement;
         }
 
         private string GetNodeTextValue(XmlNode node)
@@ -1030,8 +1266,16 @@ namespace Stimulsoft.Report.Import
             return new StiHundredthsOfInchUnit();
         }
 
-        private double ToHi(string strValue, bool useRound = true)
+        /// <summary>
+        /// Converts a size of Reporting Services to the units of the report, or to hundredths of an inch
+        /// when inHInches is set: the margins of a text or an image are kept in them in any unit of the report.
+        /// </summary>
+        private double ToHi(string strValue, bool useRound = true, bool inHInches = false)
         {
+            //an empty size is not set
+            if (string.IsNullOrWhiteSpace(strValue))
+                return 0;
+
             string stSize = string.Empty;
             double factor = 1;
             if (strValue.EndsWith("cm"))
@@ -1060,7 +1304,7 @@ namespace Stimulsoft.Report.Import
                 return 0;
             }
             double size = Convert.ToDouble(stSize.Replace(",", ".").Replace(".", ApplicationDecimalSeparator)) * factor;
-            if (factor != 1)
+            if (factor != 1 && !inHInches)
             {
                 size = unitType.ConvertFromHInches(size);
             }
@@ -1071,6 +1315,10 @@ namespace Stimulsoft.Report.Import
 
         private double ToPt(string strValue, bool isFont = false)
         {
+            //an empty size is not set
+            if (string.IsNullOrWhiteSpace(strValue))
+                return 0;
+
             string stSize = string.Empty;
             double factor = 1;
             if (strValue.EndsWith("cm"))
@@ -1103,8 +1351,55 @@ namespace Stimulsoft.Report.Import
 
         private void ThrowError(string baseNodeName, string nodeName)
         {
+            if (IsIgnoredNode(baseNodeName, nodeName))
+                return;
+
             ThrowError(baseNodeName, nodeName, null);
         }
+
+        /// <summary>
+        /// Checks whether the node holds nothing a rendered report shows: the state of the designer,
+        /// the authoring history, the settings of the report server and of the interactive viewer.
+        /// Such nodes are skipped silently, so the list of errors keeps only what the import loses.
+        /// </summary>
+        private static bool IsIgnoredNode(string baseNodeName, string nodeName)
+        {
+            if (string.IsNullOrEmpty(nodeName))
+                return false;
+
+            //the namespaces of the report designer and of the authoring metadata, the server ignores them too
+            if (nodeName.StartsWith("rd:") || nodeName.StartsWith("am:"))
+                return true;
+
+            return ignoredNodes.Contains(nodeName) || ignoredNodes.Contains($"{baseNodeName}.{nodeName}");
+        }
+
+        private static HashSet<string> ignoredNodes = new HashSet<string>
+        {
+            //the drawing order of the overlapped items, the banded layout has no such order
+            "ZIndex",
+
+            //the names and the output of the items in the XML and CSV renderings
+            "DataElementName",
+            "DataElementOutput",
+            "DataElementStyle",
+
+            //the size of the page in the interactive viewer
+            "InteractiveHeight",
+            "InteractiveWidth",
+
+            //the refresh interval of the report in the browser
+            "Report.AutoRefresh",
+
+            //the grid of the parameters panel of the report server
+            "Report.ReportParametersLayout",
+
+            //the properties of the report for the custom extensions of the report server
+            "Report.CustomProperties",
+
+            //the frozen headers of the interactive viewer
+            "TablixMember.FixedData"
+        };
 
         private void ThrowError(string baseNodeName, string nodeName, string message1)
         {
@@ -1125,196 +1420,11 @@ namespace Stimulsoft.Report.Import
             return !string.IsNullOrWhiteSpace(value) && value.TrimStart().StartsWith("=");
         }
 
-        public string ConvertExpression(string baseExpression, string dataset)
+        private Type GetTypeFromDataType(string dataType, bool nullable, bool multiValue)
         {
-            if (baseExpression == null)
-                return string.Empty;
+            if (multiValue)
+                return GetListTypeFromDataType(dataType);
 
-            string newExpression = baseExpression;
-            if (baseExpression.TrimStart().StartsWith("="))
-            {
-                newExpression = "{" + baseExpression.Trim().Substring(1) + "}";
-
-                newExpression = ReplaceFields(newExpression, dataset);
-                
-                if (newExpression == "{Now}") newExpression = "{Today}";
-                if (newExpression.StartsWith("{RowNumber(\"") && newExpression.EndsWith("\")}")) newExpression = "{Line}";
-                newExpression = newExpression.Replace("RowNumber(Nothing)", "Line");
-                newExpression = newExpression.Replace("IIf(", "IIF(");
-                newExpression = newExpression.Replace("Today()", "Today");
-
-                if (ConvertSyntaxToCSharp)
-                {
-                    newExpression = StringReplaceIgnoreCase(newExpression, "vbcrlf", "\"\\r\\n\"");
-                    newExpression = newExpression.Replace(" & ", " + ");
-                    newExpression = newExpression.Replace(" &\r\n", " +\r\n");
-                }
-                else
-                {
-                    newExpression = newExpression.Replace(" &\r\n\r\n", " &\r\n").Replace(" & \r\n\r\n", " & \r\n").Replace(" &\r\n \r\n", " &\r\n").Replace(" & \r\n \r\n", " & \r\n");
-                }
-
-                int pos = -1;
-                while((pos = newExpression.IndexOf("Code.", pos + 1, StringComparison.OrdinalIgnoreCase)) != -1)
-                {
-                    char ch = newExpression[pos - 1];
-                    if (!(char.IsLetterOrDigit(ch) || ch == '.'))
-                    {
-                        newExpression = newExpression.Remove(pos, 5);
-                    }
-                }
-
-                newExpression = TryParseFunctions(newExpression);
-                newExpression = RemoveLineFeedFromExpression(newExpression);
-            }
-            return newExpression;
-        }
-
-        private string ReplaceFields(string newExpression, string dataset)
-        {
-            foreach (DictionaryEntry de in fieldsNames)
-            {
-                if (dataset == null || ((string)de.Key).StartsWith("Parameters!"))
-                {
-                    newExpression = StringReplaceIgnoreCase(newExpression, (string)de.Key, (string)de.Value);
-                }
-                else
-                {
-                    if (((string)de.Key).StartsWith(dataset + ":", StringComparison.OrdinalIgnoreCase))
-                    {
-                        string key = ((string)de.Key).Substring(dataset.Length + 1);
-                        newExpression = StringReplaceIgnoreCase(newExpression, key, (string)de.Value);
-                    }
-                }
-            }
-
-            //check for function with second parameter "dataset"
-            foreach (DictionaryEntry de in fieldsNames)
-            {
-                string key = (string)de.Key;
-                int posKey = newExpression.IndexOf(key);
-                if (posKey != -1)
-                {
-                    int posVal = ((string)de.Value).IndexOf(".");
-                    if (posVal != -1)
-                    {
-                        string possibleDataset = ((string)de.Value).Substring(0, posVal);
-                        int posDataset = newExpression.IndexOf("\"" + possibleDataset + "\"", posKey + key.Length);
-                        if ((posDataset != -1) && (posDataset - (posKey + key.Length) < 5))
-                        {
-                            newExpression = StringReplaceIgnoreCase(newExpression, key, (string)de.Value);
-                        }
-                    }
-                }
-            }
-
-            foreach (StiVariable variable in report.Dictionary.Variables)
-            {
-                var stVar = $"Variables!{variable.Name}.Value";
-                newExpression = StringReplaceIgnoreCase(newExpression, stVar, variable.Name);
-            }
-
-            newExpression = newExpression.Replace("Globals!ExecutionTime", "Time");
-            newExpression = newExpression.Replace("Globals!PageNumber", "PageNumber");
-            newExpression = newExpression.Replace("Globals!TotalPages", "TotalPageCount");
-            newExpression = newExpression.Replace("Globals!OverallPageNumber", "PageNumberThrough");
-            newExpression = newExpression.Replace("Globals!OverallTotalPages", "TotalPageCountThrough");
-            newExpression = newExpression.Replace("Globals!ReportName", "ReportName");
-
-            return newExpression;
-        }
-
-        private string StringReplaceIgnoreCase(string input, string from, string to)
-        {
-            return Regex.Replace(input, from, to, RegexOptions.IgnoreCase);
-        }
-
-        private string TryParseFunctions(string input)
-        {
-            StringComparison sc = ConvertSyntaxToCSharp ? StringComparison.InvariantCulture : StringComparison.InvariantCultureIgnoreCase;
-
-            foreach (string func in aggregateFunctions)
-            {
-                var regex = new Regex(func + @"[\s]*\(", RegexOptions.IgnoreCase);
-                int startIndex = 0;
-                while (startIndex < input.Length)
-                {
-                    var matches = regex.Matches(input, startIndex);
-                    if (matches.Count == 0) break;
-                    if (!matches[0].Success) break;
-                    string name = matches[0].Value;
-                    int index = matches[0].Index;
-                    input = input.Substring(0, index) + name + input.Substring(index + name.Length);
-                    int indexStart = index + name.Length;
-                    int indexEnd = input.IndexOf(")", indexStart);
-                    if (indexEnd == -1) break;
-                    string stArgs = input.Substring(indexStart, indexEnd - indexStart).Trim();
-                    string[] args = stArgs.Split(new char[] { ',' });
-                    if (args.Length == 2)
-                    {
-                        var dsName = args[1].Trim();
-                        dsName = dsName.Substring(1, dsName.Length - 2);
-                        var field = args[0].Trim();
-                        string oldSt = input.Substring(index, indexEnd - index);
-                        string newSt = $"Totals.{func}({dsName},{field}";
-                        input = input.Remove(index, oldSt.Length);
-                        input = input.Insert(index, newSt);
-                        indexEnd += newSt.Length - oldSt.Length;
-                    }
-                    if (args.Length == 1)
-                    {
-                        if (func.ToLowerInvariant() == "count")
-                        {
-                            string arg1 = args[0].Trim();
-                            int posDot = arg1.LastIndexOf(".");
-                            if (posDot != -1)
-                            {
-                                string oldSt = input.Substring(index, indexEnd - index);
-                                string newSt = $"Totals.{func}({arg1.Substring(0, posDot)}";
-                                input = input.Remove(index, oldSt.Length);
-                                input = input.Insert(index, newSt);
-                                indexEnd += newSt.Length - oldSt.Length;
-                            }
-                        }
-                        else
-                        {
-                            string newSt = $"Totals.{func}(";
-                            input = input.Remove(index, name.Length);
-                            input = input.Insert(index, newSt);
-                            indexEnd += newSt.Length - name.Length;
-                        }
-                    }
-                    startIndex = indexEnd + 1;
-                }
-            }
-            return input;
-        }
-
-        private static string[] aggregateFunctions = new string[] { "Avg", "Count", "Max", "Min", "Sum", "First", "Last"};
-
-        private static string RemoveLineFeedFromExpression(string input)
-        {
-            StringBuilder sb = new StringBuilder();
-            int expLevel = 0;
-            for (int index = 0; index < input.Length; index++)
-            {
-                char ch = input[index];
-                if (ch == '{')
-                {
-                    expLevel++;
-                }
-                if (ch == '}' && expLevel > 0)
-                {
-                    expLevel--;
-                }
-                if ((ch == '\r' || ch == '\n') && expLevel > 0) continue;
-                sb.Append(ch);
-            }
-            return sb.ToString();
-        }
-
-        private Type GetTypeFromDataType(string dataType, bool nullable)
-        {
             switch (dataType)
             {
                 case "String":
@@ -1326,10 +1436,49 @@ namespace Stimulsoft.Report.Import
                 case "DateTime":
                     return (nullable ? typeof(DateTime?) : typeof(DateTime));
 
+                case "Boolean":
+                    return nullable ? typeof(bool?) : typeof(bool);
+
+                case "Float":
+                    return nullable ? typeof(double?) : typeof(double);
+
                 default:
                     ThrowError(null, null, $"DataType \"{dataType}\" not found.");
                     return typeof(object);
             }
+        }
+
+        /// <summary>
+        /// Returns the list type of Stimulsoft for a parameter of Reporting Services with many values.
+        /// </summary>
+        private Type GetListTypeFromDataType(string dataType)
+        {
+            switch (dataType)
+            {
+                case "String":
+                    return typeof(StringList);
+
+                case "Integer":
+                    return typeof(IntList);
+
+                case "DateTime":
+                    return typeof(DateTimeList);
+
+                case "Boolean":
+                    return typeof(BoolList);
+
+                case "Float":
+                    return typeof(DoubleList);
+
+                default:
+                    ThrowError(null, null, $"DataType \"{dataType}\" not found.");
+                    return typeof(StringList);
+            }
+        }
+
+        private static bool IsListType(Type type)
+        {
+            return type != null && typeof(IStiList).IsAssignableFrom(type);
         }
 
         private string MakeFullDataSetName(string baseName, string name)
@@ -1353,6 +1502,24 @@ namespace Stimulsoft.Report.Import
         #region Methods.Import
         public static StiImportResult Import(byte[] bytes)
         {
+            return Import(bytes, null);
+        }
+
+        /// <summary>
+        /// Imports a report of Reporting Services. The shared data sources and data sets the report refers to
+        /// are read from the .rds and .rsd files of the given folder, the folder of the report as a rule; when
+        /// it is null, they are imported without the connection and named in the list of errors.
+        /// </summary>
+        public static StiImportResult Import(byte[] bytes, string sharedFolder)
+        {
+            return Import(bytes, sharedFolder, DefaultBodyLayout);
+        }
+
+        /// <summary>
+        /// Imports a report of Reporting Services and puts the items of its body on the page the given way.
+        /// </summary>
+        public static StiImportResult Import(byte[] bytes, string sharedFolder, StiReportingServicesBodyLayout bodyLayout)
+        {
             var currentCulture = Thread.CurrentThread.CurrentCulture;
 
             try
@@ -1370,7 +1537,12 @@ namespace Stimulsoft.Report.Import
                     doc.Load(stream);
                 }
 
-                var helper = new StiReportingServicesHelper { ConvertSyntaxToCSharp = false };
+                var helper = new StiReportingServicesHelper
+                {
+                    ConvertSyntaxToCSharp = false,
+                    sharedFolder = sharedFolder,
+                    BodyLayout = bodyLayout
+                };
                 helper.ProcessRootNode(doc.DocumentElement, report, errors);
 
                 return new StiImportResult(report, errors);

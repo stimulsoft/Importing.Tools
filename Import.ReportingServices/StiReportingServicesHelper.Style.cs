@@ -47,6 +47,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Xml;
+using System.Xml.Linq;
 
 namespace Stimulsoft.Report.Import
 {
@@ -128,27 +129,27 @@ namespace Stimulsoft.Report.Import
 
                     case "PaddingLeft":
                         if (text != null)
-                            text.Margins.Left = ToHi(GetNodeTextValue(node));
+                            text.Margins.Left = ToHi(GetNodeTextValue(node), inHInches: true);
                         if (image != null)
-                            image.Margins.Left = ToHi(GetNodeTextValue(node));
+                            image.Margins.Left = ToHi(GetNodeTextValue(node), inHInches: true);
                         break;
                     case "PaddingRight":
                         if (text != null)
-                            text.Margins.Right = ToHi(GetNodeTextValue(node));
+                            text.Margins.Right = ToHi(GetNodeTextValue(node), inHInches: true);
                         if (image != null)
-                            image.Margins.Right = ToHi(GetNodeTextValue(node));
+                            image.Margins.Right = ToHi(GetNodeTextValue(node), inHInches: true);
                         break;
                     case "PaddingTop":
                         if (text != null)
-                            text.Margins.Top = ToHi(GetNodeTextValue(node));
+                            text.Margins.Top = ToHi(GetNodeTextValue(node), inHInches: true);
                         if (image != null)
-                            image.Margins.Top = ToHi(GetNodeTextValue(node));
+                            image.Margins.Top = ToHi(GetNodeTextValue(node), inHInches: true);
                         break;
                     case "PaddingBottom":
                         if (text != null)
-                            text.Margins.Bottom = ToHi(GetNodeTextValue(node));
+                            text.Margins.Bottom = ToHi(GetNodeTextValue(node), inHInches: true);
                         if (image != null)
-                            image.Margins.Bottom = ToHi(GetNodeTextValue(node));
+                            image.Margins.Bottom = ToHi(GetNodeTextValue(node), inHInches: true);
                         break;
 
                     case "FontSize":
@@ -196,9 +197,9 @@ namespace Stimulsoft.Report.Import
                             var stColor = GetNodeTextValue(node);
                             if (IsExpression(stColor))
                             {
-                                var expr = ConvertExpression(stColor, dataSet);
-                                expr = expr.Substring(1, expr.Length - 2);
-                                component.Expressions.Add(new StiAppExpression("Brush", $"SolidBrushValue({expr})"));
+                                var expr = ConvertPrintExpression(stColor, dataSet, out var usesCode);
+                                if (expr != null)
+                                    AddPrintExpression(component, "Brush", expr, usesCode);
                             }
                             else
                             {
@@ -215,9 +216,9 @@ namespace Stimulsoft.Report.Import
                             var stColor = GetNodeTextValue(node);
                             if (IsExpression(stColor))
                             {
-                                var expr = ConvertExpression(stColor, dataSet);
-                                expr = expr.Substring(1, expr.Length - 2);
-                                component.Expressions.Add(new StiAppExpression("TextBrush", $"SolidBrushValue({expr})"));
+                                var expr = ConvertPrintExpression(stColor, dataSet, out var usesCode);
+                                if (expr != null)
+                                    AddPrintExpression(component, "TextBrush", expr, usesCode);
                             }
                             else
                             {
@@ -229,7 +230,23 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     case "TextAlign":
-                        if (text != null) text.HorAlignment = ParseTextAlign(GetNodeTextValue(node));
+                        if (text != null)
+                        {
+                            var textAlign = GetNodeTextValue(node);
+                            text.HorAlignment = ParseTextAlign(textAlign);
+
+                            //General depends on the type of the value, see ResolveGeneralAlignment
+                            if (textAlign == "General")
+                                generalAlignedTexts.Add(text);
+
+                            else
+                                generalAlignedTexts.Remove(text);
+                        }
+                        break;
+
+                    case "WritingMode":
+                        if (text != null)
+                            text.Angle = ParseWritingMode(GetNodeTextValue(node));
                         break;
 
                     case "VerticalAlign":
@@ -255,11 +272,14 @@ namespace Stimulsoft.Report.Import
 
                     case "Format":
                         string format = GetNodeTextValue(node);
+
+                        //a format given by an expression is applied to the value of the text, see ApplyFormatExpression
+                        if (IsExpression(format))
+                            break;
+
                         if (!string.IsNullOrWhiteSpace(format) && text != null)
                         {
-                            if (format == "P") text.TextFormat = new StiPercentageFormatService();
-                            else if (format == "C") text.TextFormat = new StiCurrencyFormatService();
-                            else text.TextFormat = new StiCustomFormatService(format);
+                            text.TextFormat = CreateTextFormat(format);
                         }
                         break;
 
@@ -280,16 +300,69 @@ namespace Stimulsoft.Report.Import
                         ProcessBackgroundImage(node, component);
                         break;
 
+                    case "BackgroundGradientType":
+                        if (brush == null)
+                            CheckBackgroundGradientType(baseNode, node);
+                        break;
+
+                    case "Language":
+                        if (text != null)
+                            textLanguages[text] = GetNodeTextValue(node)?.Trim();
+                        break;
+
+                    case "Calendar":
+                        CheckCalendar(baseNode, node);
+                        break;
+
+                    case "NumeralVariant":
+                        CheckNumeralVariant(baseNode, node);
+                        break;
+
+                    case "NumeralLanguage":
+                    case "UnicodeBiDi":
+                        //the digits follow NumeralVariant, the embedding of the text follows Direction
+                        break;
+
                     //case "InteractiveHeight":
                     //case "InteractiveWidth":
                     //ignored or not implemented yet
                     //break;
+
+                    //the fill and the shadow are made from all the values together, after the loop
+                    case "BackgroundGradientEndColor":
+                    case "BackgroundHatchType":
+                    case "ShadowColor":
+                    case "ShadowOffset":
+                        break;
 
                     default:
                         ThrowError(baseNode.Name, node.Name);
                         break;
                 }
             }
+
+            if (brush?.Brush is StiSolidBrush solidBackground)
+            {
+                var backgroundBrush = GetBackgroundBrush(baseNode, solidBackground.Color);
+                if (backgroundBrush != null)
+                    brush.Brush = backgroundBrush;
+            }
+
+            ApplyComponentShadow(baseNode, component);
+        }
+
+        /// <summary>
+        /// The designer writes the gradient type None for every item and chart part, only a real
+        /// gradient is lost by the import and goes to the list of errors.
+        /// </summary>
+        private void CheckBackgroundGradientType(XmlNode baseNode, XmlNode node)
+        {
+            var gradientType = GetNodeTextValue(node);
+            if (string.IsNullOrWhiteSpace(gradientType) ||
+                gradientType.Equals("None", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            ThrowError(baseNode.Name, node.Name);
         }
 
         private void ProcessBorderSide(XmlNode baseNode, StiComponent component, StiBorderSides borderSide)
@@ -426,6 +499,65 @@ namespace Stimulsoft.Report.Import
                     return StiVertAlignment.Bottom;
             }
             return StiVertAlignment.Top;
+        }
+
+        /// <summary>
+        /// Makes the format of a text for a format string of .NET. A standard format of a number, as N2,
+        /// C0 or P1, turns into the number, currency or percentage format with its number of digits,
+        /// so an export keeps the value a number. The other strings, the standard formats of a date
+        /// among them, stay a custom format: the type of the value is not known here, and D means a
+        /// date for a date and an integer for a number.
+        /// </summary>
+        private static StiFormatService CreateTextFormat(string format)
+        {
+            var match = Regex.Match(format.Trim(), "^([NnCcPp])([0-9]{0,2})$");
+            if (!match.Success)
+                return new StiCustomFormatService(format);
+
+            StiNumberFormatService service;
+
+            switch (char.ToUpperInvariant(match.Groups[1].Value[0]))
+            {
+                case 'C':
+                    service = new StiCurrencyFormatService();
+                    break;
+
+                case 'P':
+                    service = new StiPercentageFormatService();
+                    break;
+
+                default:
+                    service = new StiNumberFormatService();
+                    break;
+            }
+
+            if (match.Groups[2].Length > 0)
+            {
+                service.DecimalDigits = int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture);
+                service.State |= StiTextFormatState.DecimalDigits;
+            }
+
+            return service;
+        }
+
+        /// <summary>
+        /// Returns the angle of the text for a writing mode: Vertical and tb-rl read from the top
+        /// down, Rotate270 reads from the bottom up.
+        /// </summary>
+        private static float ParseWritingMode(string writingMode)
+        {
+            switch (writingMode)
+            {
+                case "Vertical":
+                case "tb-rl":
+                    return 270;
+
+                case "Rotate270":
+                    return 90;
+
+                default:
+                    return 0;
+            }
         }
 
         private static Hashtable HtmlNameToColor = null;

@@ -37,6 +37,7 @@ using Stimulsoft.Report.Dictionary;
 using Stimulsoft.Report.Units;
 using System;
 using System.Collections;
+using System.Linq;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
@@ -47,6 +48,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Xml;
+using System.Xml.Linq;
 
 namespace Stimulsoft.Report.Import
 {
@@ -77,6 +79,7 @@ namespace Stimulsoft.Report.Import
             fullDatasetName = MakeFullDataSetName(dataset, datasetName);
 
             ArrayList tableColumns = new ArrayList();
+            var columnVisibilities = new List<XmlNode>();
             ArrayList tableHeaders = new ArrayList();
             ArrayList tableDetails = new ArrayList();
             ArrayList tableFooters = new ArrayList();
@@ -104,7 +107,7 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     case "TableColumns":
-                        tableColumns = ProcessTableColumnsType(node);
+                        tableColumns = ProcessTableColumnsType(node, columnVisibilities);
                         break;
 
                     case "Header":
@@ -127,7 +130,8 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     default:
-                        ThrowError(baseNode.Name, node.Name);
+                        if (!ProcessInteractivityNode(node, component, dataset))
+                            ThrowError(baseNode.Name, node.Name);
                         break;
                 }
             }
@@ -153,14 +157,44 @@ namespace Stimulsoft.Report.Import
                         offset += (double)tableColumns[index];
                     }
                 }
+
+                ApplyColumnVisibilities(band, columnVisibilities, fullDatasetName);
             }
+
+            ResolveUserSorts(component, component.Components.OfType<StiDataBand>().FirstOrDefault());
 
             container.Components.Add(component);
         }
         #endregion
 
         #region Table columns
-        private ArrayList ProcessTableColumnsType(XmlNode baseNode)
+        /// <summary>
+        /// Gives the cells of a row of a table the visibility of their columns. The cells are docked to
+        /// the left, so a hidden column gives its place to the columns on the right, as in Reporting
+        /// Services. A row with merged cells does not match the columns and is named in the errors.
+        /// </summary>
+        private void ApplyColumnVisibilities(StiBand band, List<XmlNode> visibilities, string dataSet)
+        {
+            if (visibilities.All(v => v == null))
+                return;
+
+            if (band.Components.Count != visibilities.Count)
+            {
+                ThrowError(null, null, $"Visibility of columns not applied to merged cells: {band.Name}");
+                return;
+            }
+
+            for (var index = 0; index < visibilities.Count; index++)
+            {
+                var cell = band.Components[index];
+                cell.DockStyle = StiDockStyle.Left;
+
+                if (visibilities[index] != null)
+                    ProcessVisibility(visibilities[index], cell, dataSet);
+            }
+        }
+
+        private ArrayList ProcessTableColumnsType(XmlNode baseNode, List<XmlNode> visibilities)
         {
             ArrayList list = new ArrayList();
             foreach (XmlNode node in baseNode.ChildNodes)
@@ -170,6 +204,7 @@ namespace Stimulsoft.Report.Import
 
                     case "TableColumn":
                         list.Add(ProcessTableColumnType(node));
+                        visibilities.Add(node["Visibility"]?["Hidden"] != null ? node["Visibility"] : null);
                         break;
 
                     default:
@@ -190,6 +225,10 @@ namespace Stimulsoft.Report.Import
 
                     case "Width":
                         width = ToHi(GetNodeTextValue(node));
+                        break;
+
+                    case "Visibility":
+                        //applied to the cells of the column, see ApplyColumnVisibilities
                         break;
 
                     default:

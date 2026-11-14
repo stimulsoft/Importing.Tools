@@ -36,6 +36,9 @@ using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text.RegularExpressions;
 using System.Xml;
 
 namespace Stimulsoft.Report.Import
@@ -56,6 +59,11 @@ namespace Stimulsoft.Report.Import
             public XmlNode VisibilityNode;
             public bool ResetPageNumber = false;
             public string BreakLocation = null;
+            public bool RepeatOnNewPage;
+            public bool KeepTogether;
+            public string DocumentMapLabel;
+            //the filters of the details, a group of the rows without group expressions
+            public XmlNode DetailsFilters;
         }
 
         private class GroupInfo2
@@ -68,6 +76,11 @@ namespace Stimulsoft.Report.Import
 
             public TablixMember Member;
             public GroupInfo2 Parent;
+
+            //RepeatOnNewPage of the static members of the lines
+            public bool RepeatHeader;
+            public bool RepeatFooter;
+            public bool RepeatGroupHeader;
         }
 
         private class Info2
@@ -87,11 +100,23 @@ namespace Stimulsoft.Report.Import
             public List<StiComponent> TablixCorner;
             public string DataSetName;
             public string DataSetName2;
+
+            //the visibility of each column of the body, null when no column can be hidden
+            public List<XmlNode> ColumnVisibilities;
+
+            //the visibility of each static row of the body, null when no row can be hidden
+            public List<XmlNode> RowVisibilities;
+
+            //the group that collapses the rows of the band being made when they are toggled
+            public StiGroupHeaderBand ToggleGroup;
         }
         #endregion
 
         private void ProcessTablixType(XmlNode baseNode, StiContainer baseContainer, StiPage page, string dataset)
         {
+            var wasInDataRegion = isInDataRegion;
+            isInDataRegion = true;
+
             var container = new StiPanel();
             container.Name = CheckComponentName(page.Report, baseNode.Attributes["Name"]?.Value);
             container.Border = new StiAdvancedBorder();
@@ -101,6 +126,9 @@ namespace Stimulsoft.Report.Import
 
             string datasetName = null;
             string fullDatasetName = null;
+            var repeatColumnHeaders = false;
+            string noRowsMessage = null;
+            Tuple<string, string, int> rowLimit = null;
             StiFiltersCollection filters = null;
             string[] sortExpr = null;
 
@@ -168,18 +196,39 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     case "Filters":
-                        filters = ProcessFiltersType(node, fullDatasetName);
+                        rowLimit = GetTablixRowLimit(node, fullDatasetName);
+                        filters = ProcessFiltersType(node, fullDatasetName, rowLimitTaken: rowLimit != null);
                         break;
 
                     case "TablixCorner":
                         tablixCorner = ProcessTablixCornerType(node, fullDatasetName, page);
                         break;
 
+                    case "RepeatColumnHeaders":
+                        repeatColumnHeaders = IsTrue(GetNodeTextValue(node));
+                        break;
+
+                    case "PageBreak":
+                        ProcessItemPageBreak(node, container);
+                        break;
+
+                    case "NoRowsMessage":
+                        noRowsMessage = GetNodeTextValue(node);
+                        break;
+
+                    case "Visibility":
+                        ProcessVisibility(node, container, dataset);
+                        break;
+
+                    //the headers stay in view when the viewer scrolls the region, the viewer has no such headers
+                    case "FixedRowHeaders":
+                    case "FixedColumnHeaders":
+                        break;
+
                     case "TablixRowHierarchy":
                     case "TablixColumnHierarchy":
                     case "SortExpressions":
                     case "RepeatRowHeaders":
-                    case "RepeatColumnHeaders":
                     case "KeepTogether":
                     case "CustomProperties":
                     case "DataSetName":
@@ -188,7 +237,8 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     default:
-                        ThrowError(baseNode.Name, node.Name);
+                        if (!ProcessInteractivityNode(node, container, dataset))
+                            ThrowError(baseNode.Name, node.Name);
                         break;
                 }
             }
@@ -207,6 +257,14 @@ namespace Stimulsoft.Report.Import
 
             var hasRowColumns = !((info.Groups.Count == 1) && (info.Groups[0].Count == 1) && (info.Groups[0][0].HeaderLines.Count == tableDetails.Count));
             var hasColumnGroups = !((info.ColumnsGroups.Count == 1) && (info.ColumnsGroups[0].Count == 1) && (info.ColumnsGroups[0][0].HeaderLines.Count == info.ColumnsCells.Count));
+
+            info.RowVisibilities = GetRowVisibilities(rowsHierarchy2, tableDetails.Count);
+            info.ColumnVisibilities = GetColumnVisibilities(columnsHierarchy2, tableColumnsWidths.Count);
+            if (info.ColumnVisibilities != null && hasColumnGroups)
+            {
+                ThrowError(null, null, $"Visibility of columns of a matrix not applied: {container.Name}");
+                info.ColumnVisibilities = null;
+            }
             if (hasColumnGroups)
             {
                 //calculate row height for header lines
@@ -253,6 +311,11 @@ namespace Stimulsoft.Report.Import
             }
             else
             {
+                StiDataBand firstDataBand = null;
+                var countScopes = new Dictionary<StiBand, StiBand>();
+                var rowScopes = new Dictionary<StiBand, List<string>>();
+                var groupBands = new Dictionary<string, StiBand>(StringComparer.OrdinalIgnoreCase);
+
                 //add bands
                 //first level
                 for (int index = 0; index < info.Groups.Count; index++)
@@ -262,29 +325,97 @@ namespace Stimulsoft.Report.Import
 
                     //second level
                     var firstGroup = groups[0];
+                    StiHeaderBand header = null;
                     if (firstGroup.HeaderLines.Count > 0)
                     {
-                        var header = new StiHeaderBand() { PrintIfEmpty = true };
+                        //Reporting Services repeats a header only by RepeatOnNewPage, a header band of
+                        //Stimulsoft is printed on all pages by default
+                        //without rows Reporting Services shows the message instead of the whole region
+                        header = new StiHeaderBand() { PrintIfEmpty = string.IsNullOrEmpty(noRowsMessage) };
                         header.Name = $"{container.Name}_{levelId}Hd";
+                        header.PrintOnAllPages = firstGroup.RepeatHeader || repeatColumnHeaders;
                         AddTablixCellsToContainer2(info, header, firstGroup.HeaderLines, container, firstGroup);
                     }
 
+                    var sort = new List<string>();
+                    var groupHeaders = new List<StiGroupHeaderBand>();
+                    var groupConditions = new List<string>();
                     for (int groupIndex = 0; groupIndex < groups.Count - 1; groupIndex++)
                     {
                         var group = groups[groupIndex];
                         var groupHeader = new StiGroupHeaderBand();
                         groupHeader.Name = $"{container.Name}_{levelId}Gh{groupIndex + 1}";
-                        groupHeader.Condition = new StiGroupConditionExpression("{" + group.Member.GroupExpressions[0] + "}");      //todo use all expressions
+                        groupConditions.Add(GetGroupCondition(group.Member.GroupExpressions));
+                        groupHeader.Condition = new StiGroupConditionExpression("{" + groupConditions.Last() + "}");
+                        AddGroupSort(sort, groupHeader, group.Member);
+                        groupHeader.PrintOnAllPages = group.RepeatGroupHeader;
+                        groupHeader.KeepGroupTogether = group.Member.KeepTogether;
+
+                        if (group.Member.DocumentMapLabel != null)
+                            groupHeader.Bookmark = new StiBookmarkExpression(group.Member.DocumentMapLabel);
+
+                        info.ToggleGroup = groupHeaders.LastOrDefault();
                         AddTablixCellsToContainer2(info, groupHeader, group.GroupHeaderLines, container, group);
+                        info.ToggleGroup = null;
+                        groupHeaders.Add(groupHeader);
+                        countScopes[groupHeader] = groupHeader;
+                        rowScopes[groupHeader] = groupConditions.ToList();
+
+                        if (group.Member.GroupName != null)
+                            groupBands[group.Member.GroupName] = groupHeader;
                     }
+
+                    //the rows are sorted by the groups from the outer one, by the details and by the region
+                    var detailsSort = groups[groups.Count - 1].Member?.SortExpressions;
+                    if (detailsSort != null)
+                        sort.AddRange(GetRowSort(detailsSort));
+
+                    if (sortExpr != null)
+                        sort.AddRange(GetRowSort(sortExpr));
+
+                    //the first or the last rows by a value: the rows sorted by it, the band prints the first ones
+                    if (rowLimit != null && groups.Count == 1)
+                        sort.InsertRange(0, new[] { rowLimit.Item1, rowLimit.Item2 });
 
                     var dataBand = new StiDataBand();
                     dataBand.Name = $"{container.Name}_{levelId}Db";
                     dataBand.DataSourceName = datasetName;
-                    if (sortExpr != null && sortExpr.Length > 0)
-                        dataBand.Sort = sortExpr;
-                    if (filters != null) dataBand.Filters = filters;
+                    if (sort.Count > 0)
+                        dataBand.Sort = sort.ToArray();
+
+                    var detailsFilters = groups[groups.Count - 1].Member?.DetailsFilters;
+                    var bandFilters = detailsFilters != null
+                        ? MergeFilters(filters, ProcessFiltersType(detailsFilters, fullDatasetName))
+                        : filters;
+                    if (bandFilters != null) dataBand.Filters = bandFilters;
+                    info.ToggleGroup = groupHeaders.LastOrDefault();
                     AddTablixCellsToContainer2(info, dataBand, groups[groups.Count - 1].DataLines, container, groups[groups.Count - 1]);
+                    info.ToggleGroup = null;
+
+                    if (rowLimit != null && groups.Count == 1)
+                    {
+                        dataBand.Expressions.Add(new StiAppExpression("Enabled", $"Line <= {rowLimit.Item3}"));
+                    }
+                    else if (rowLimit != null)
+                    {
+                        ThrowError(null, null,
+                            $"Filter of the first rows of a grouped table not imported: {container.Name}");
+                    }
+
+                    var detailsLabel = groups[groups.Count - 1].Member?.DocumentMapLabel;
+                    if (detailsLabel != null)
+                        dataBand.Bookmark = new StiBookmarkExpression(detailsLabel);
+
+                    if (firstDataBand == null)
+                        firstDataBand = dataBand;
+
+                    countScopes[dataBand] = dataBand;
+                    rowScopes[dataBand] = null;
+                    if (header != null)
+                    {
+                        countScopes[header] = dataBand;
+                        rowScopes[header] = new List<string>();
+                    }
 
                     bool needGroupFooters = false;
                     for (int groupIndex = 0; groupIndex < groups.Count - 1; groupIndex++)
@@ -299,19 +430,246 @@ namespace Stimulsoft.Report.Import
                             var groupFooter = new StiGroupFooterBand();
                             groupFooter.Name = $"{container.Name}_{levelId}Gf{groupIndex + 1}";
                             AddTablixCellsToContainer2(info, groupFooter, group.GroupFooterLines, container, group);
+                            countScopes[groupFooter] = groupHeaders[groupIndex];
+                            rowScopes[groupFooter] = groupConditions.Take(groupIndex + 1).ToList();
                         }
                     }
 
                     if (firstGroup.FooterLines.Count > 0)
                     {
-                        var footer = new StiFooterBand() { PrintIfEmpty = true };
+                        var footer = new StiFooterBand() { PrintIfEmpty = string.IsNullOrEmpty(noRowsMessage) };
                         footer.Name = $"{container.Name}_{levelId}Ft";
+                        footer.PrintOnAllPages = firstGroup.RepeatFooter;
                         AddTablixCellsToContainer2(info, footer, firstGroup.FooterLines, container, firstGroup);
+                        countScopes[footer] = dataBand;
+                        rowScopes[footer] = new List<string>();
                     }
+                }
+
+                //the scope of the region itself is all its rows, the rows of its data band
+                var regionName = baseNode.Attributes["Name"]?.Value;
+                if (regionName != null && firstDataBand != null && !groupBands.ContainsKey(regionName))
+                    groupBands[regionName] = firstDataBand;
+
+                ResolveGroupScopes(container, groupBands, info.DataSetName, info.DataSetName2);
+
+                if (hasColumnGroups)
+                    ResolveMatrixCells(container, rowScopes, countScopes, info.DataSetName, info.DataSetName2);
+
+                ResolveChartScopes(rowScopes);
+
+                ResolveUserSorts(container, firstDataBand);
+                ResolveCountScopes(countScopes, container);
+                ResolveRunningScopes(container, groupBands, firstDataBand);
+
+                if (!string.IsNullOrEmpty(noRowsMessage))
+                    AddTablixNoRowsMessage(baseNode, container, page, datasetName, noRowsMessage);
+            }
+
+            ResolveGroupScopes(container, new Dictionary<string, StiBand>(), null, null);
+            ResolveCountScopes(new Dictionary<StiBand, StiBand>(), container);
+            ResolveRunningScopes(container, new Dictionary<string, StiBand>(), null);
+            isInDataRegion = wasInDataRegion;
+
+            baseContainer.Components.Add(container);
+        }
+
+        /// <summary>
+        /// Returns the first filter of the first or the last rows of a tablix, TopN or BottomN, as the direction of
+        /// the sort, the expression to sort by and the number of the rows; null when there is none or its number
+        /// is not a constant. A data band of Stimulsoft has no such filter, the rows are sorted by the expression
+        /// and the band prints the first ones. Reporting Services takes the rows tied with the last one too, the
+        /// band does not; the order of the rows is the order of the expression, not of the data.
+        /// </summary>
+        private Tuple<string, string, int> GetTablixRowLimit(XmlNode filtersNode, string dataSet)
+        {
+            var limits = filtersNode.ChildNodes.Cast<XmlNode>().Where(IsRowLimitFilter).ToList();
+            if (limits.Count == 0)
+                return null;
+
+            var filter = limits[0];
+            var op = filter.SelectSingleNode("*[local-name()='Operator']").InnerText.Trim();
+            var expression = filter.SelectSingleNode("*[local-name()='FilterExpression']")?.InnerText;
+            var value = filter.SelectSingleNode(".//*[local-name()='FilterValue']")?.InnerText ?? string.Empty;
+
+            var match = Regex.Match(value, @"^\s*=?\s*(C?Int\s*\(\s*)?(?<count>\d+)\s*\)?\s*$",
+                RegexOptions.IgnoreCase);
+            if (!match.Success || string.IsNullOrWhiteSpace(expression))
+                return null;
+
+            if (limits.Count > 1)
+                ThrowError(null, null, $"Only the first filter of the first rows is imported: {op}");
+
+            return Tuple.Create(op == "TopN" ? "DESC" : "ASC", ConvertExpression(expression, dataSet),
+                int.Parse(match.Groups["count"].Value));
+        }
+
+        /// <summary>
+        /// Returns the filters of the tablix and of its details together, a row passes both.
+        /// </summary>
+        private static StiFiltersCollection MergeFilters(StiFiltersCollection tablixFilters,
+            StiFiltersCollection detailsFilters)
+        {
+            var filters = new StiFiltersCollection();
+            foreach (var collection in new[] { tablixFilters, detailsFilters })
+            {
+                if (collection == null)
+                    continue;
+
+                foreach (StiFilter filter in collection)
+                {
+                    filters.Add(filter);
                 }
             }
 
-            baseContainer.Components.Add(container);
+            return filters.Count > 0 ? filters : null;
+        }
+
+        /// <summary>
+        /// Adds the message of a tablix without rows: a band at the end of the region that prints once when the
+        /// data set has no rows, with the text in the font of the tablix. The headers and the footers do not
+        /// print then, see ProcessTablixType. The rows are counted in the data set, the filters of the tablix
+        /// are not taken into account.
+        /// </summary>
+        private void AddTablixNoRowsMessage(XmlNode baseNode, StiContainer container, StiPage page,
+            string datasetName, string message)
+        {
+            if (string.IsNullOrEmpty(datasetName))
+                return;
+
+            var height = ToHi("0.25in");
+            var band = new StiDataBand
+            {
+                Name = CheckComponentName(page.Report, container.Name + "NoRows"),
+                Page = page,
+                CountData = 1,
+                CanGrow = true,
+                ClientRectangle = new RectangleD(0, 0, container.Width, height)
+            };
+
+            var equal = ConvertSyntaxToCSharp ? "==" : "=";
+            band.Expressions.Add(new StiAppExpression("Enabled", $"{datasetName}.Count {equal} 0"));
+
+            var text = new StiText
+            {
+                Name = CheckComponentName(page.Report, container.Name + "NoRowsMessage"),
+                Page = page,
+                CanGrow = true,
+                WordWrap = true,
+                ClientRectangle = new RectangleD(0, 0, container.Width, height)
+            };
+
+            var style = GetChildNode(baseNode, "Style");
+            if (style != null)
+                ProcessStyleType(style, text, datasetName);
+
+            //the frame and the fill of the tablix are on its panel
+            text.Border = new StiBorder();
+            text.Brush = new StiSolidBrush(Color.Transparent);
+            text.Text = IsExpression(message) ? ConvertExpression(message, datasetName) : message;
+
+            band.Components.Add(text);
+            container.Components.Add(band);
+        }
+
+        /// <summary>
+        /// Returns the visibility of each column of the body, the visibility of a static member of the
+        /// columns or of its parent. Null when no column can be hidden or the members do not match the
+        /// columns.
+        /// </summary>
+        private static List<XmlNode> GetColumnVisibilities(List<TablixMember> hierarchy, int columnCount)
+        {
+            var visibilities = new List<XmlNode>();
+            AddColumnVisibilities(hierarchy, null, visibilities);
+
+            if (visibilities.Count != columnCount || visibilities.All(v => v == null))
+                return null;
+
+            return visibilities;
+        }
+
+        /// <summary>
+        /// Returns the visibility of each static row of the body. The visibility of a group is applied
+        /// to its bands, so the row of a group gets null. Null when no row can be hidden or the members
+        /// do not match the rows.
+        /// </summary>
+        private static List<XmlNode> GetRowVisibilities(List<TablixMember> hierarchy, int rowCount)
+        {
+            var visibilities = new List<XmlNode>();
+            AddRowVisibilities(hierarchy, visibilities);
+
+            if (visibilities.Count != rowCount || visibilities.All(v => v == null))
+                return null;
+
+            return visibilities;
+        }
+
+        private static void AddRowVisibilities(List<TablixMember> members, List<XmlNode> visibilities)
+        {
+            foreach (var member in members)
+            {
+                if (member.Childs != null && member.Childs.Count > 0)
+                    AddRowVisibilities(member.Childs, visibilities);
+
+                else
+                    visibilities.Add(member.GroupName == null ? member.VisibilityNode : null);
+            }
+        }
+
+        /// <summary>
+        /// Hides a static row: the band when it has the row only, the line of the row otherwise. A row
+        /// toggled by a text box is collapsed by the group around it, so it can be shown in the viewer;
+        /// a row toggled out of any group keeps its initial visibility. Returns true when the row itself is
+        /// hidden, false when the group collapses it.
+        /// </summary>
+        private bool ApplyRowVisibility(Info2 info, XmlNode visibility, StiBand band, StiContainer line,
+            bool isSeveralLines)
+        {
+            var interaction = info.ToggleGroup?.Interaction as StiBandInteraction;
+            if (visibility["ToggleItem"] != null && interaction != null)
+            {
+                interaction.CollapsingEnabled = true;
+                info.ToggleGroup.Collapsed = new StiCollapsedExpression(GetCollapsedValue(visibility, info.DataSetName));
+                return false;
+            }
+
+            if (isSeveralLines)
+            {
+                ProcessVisibility(visibility, line, info.DataSetName);
+                band.CanShrink = true;
+            }
+            else
+            {
+                ProcessVisibility(visibility, band, info.DataSetName);
+            }
+
+            return true;
+        }
+
+        private string GetCollapsedValue(XmlNode visibility, string dataSet)
+        {
+            var hidden = GetNodeTextValue(visibility["Hidden"]);
+            if (!IsExpression(hidden))
+                return IsTrue(hidden) ? "{true}" : "{false}";
+
+            var expression = ConvertPrintExpression(hidden, dataSet, out _);
+
+            return expression != null ? "{" + expression + "}" : "{false}";
+        }
+
+        private static void AddColumnVisibilities(List<TablixMember> members, XmlNode parentVisibility,
+            List<XmlNode> visibilities)
+        {
+            foreach (var member in members)
+            {
+                var visibility = member.VisibilityNode ?? parentVisibility;
+
+                if (member.Childs != null && member.Childs.Count > 0)
+                    AddColumnVisibilities(member.Childs, visibility, visibilities);
+
+                else
+                    visibilities.Add(visibility);
+            }
         }
 
         private void AddTablixCellsToContainer2(Info2 info, StiBand baseBand, List<int> lines, StiContainer baseContainer, GroupInfo2 group)
@@ -335,6 +693,7 @@ namespace Stimulsoft.Report.Import
             if (lines.Count == 0) return;
 
             double offsetY = 0;
+            var hasHiddenRow = false;
             var hasColumnGroups = !((info.ColumnsGroups.Count == 1) && (info.ColumnsGroups[0].Count == 1) && (info.ColumnsGroups[0][0].HeaderLines.Count == info.ColumnsCells.Count));
 
             for (int indexLine = 0; indexLine < lines.Count; indexLine++)
@@ -364,6 +723,10 @@ namespace Stimulsoft.Report.Import
                 {
                     var comp = container.Components[indexComp++];
 
+                    var visibility = info.ColumnVisibilities?[index];
+                    if (visibility != null)
+                        ProcessVisibility(visibility, comp, info.DataSetName);
+
                     int colspan = 0;
                     if (comp.TagValue != null && comp.TagValue is int tagInt)
                     {
@@ -389,6 +752,10 @@ namespace Stimulsoft.Report.Import
                     var comp = newCont.Components[index];
                     comp.GrowToHeight = true;
                     comp.Height = rowHeight;
+
+                    //a hidden column gives its place to the columns on the right, as in Reporting Services
+                    if (info.ColumnVisibilities != null)
+                        comp.DockStyle = StiDockStyle.Left;
                 }
 
                 if (hasColumnGroups)
@@ -397,12 +764,29 @@ namespace Stimulsoft.Report.Import
                     ApplyColumnsGrouping(info, newCont);
                 }
 
-                if (lines.Count > 1)
+                var rowVisibility = info.RowVisibilities?[lineIndex];
+                if (rowVisibility != null &&
+                    ApplyRowVisibility(info, rowVisibility, baseBand, newCont, lines.Count > 1))
+                    hasHiddenRow = true;
+
+                if (lines.Count > 1 && !hasColumnGroups && TakeRowVisibility(newCont))
+                {
+                    //one cell for the whole row: the cell goes to the band without the row around it
+                    var cell = newCont.Components[0];
+                    newCont.Components.Remove(cell);
+                    cell.Top = offsetY;
+                    cell.GrowToHeight = false;
+                    offsetY += rowHeight;
+                    baseBand.Components.Add(cell);
+                }
+
+                else if (lines.Count > 1)
                 {
                     newCont.Name = baseBand.Name + "_c" + indexLine.ToString();
                     newCont.Width = baseContainer.Width;
                     newCont.Height = rowHeight;
                     newCont.Top = offsetY;
+                    newCont.CanGrow = true;
                     offsetY += rowHeight;
                     baseBand.Components.Add(newCont);
                 }
@@ -412,6 +796,62 @@ namespace Stimulsoft.Report.Import
                 }
                 baseBand.Height += container.Height;
             }
+
+            //the engine does not print a hidden row at all, so the DecreasingSize shift mode of the rows below
+            //has nothing to move up from; the rows docked to the top take the place of a hidden row, as in
+            //Reporting Services
+            if (hasHiddenRow && lines.Count > 1)
+            {
+                foreach (StiComponent row in baseBand.Components)
+                {
+                    row.DockStyle = StiDockStyle.Top;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Returns true when the row has one cell that can stand for it. The visibility of the row goes to the cell:
+        /// two expressions of the visibility are joined, the cell prints when both allow it. A script of the
+        /// visibility, which calls the code of the report, is not joined with anything, the row stays then.
+        /// </summary>
+        private bool TakeRowVisibility(StiContainer line)
+        {
+            if (line.Components.Count != 1)
+                return false;
+
+            var cell = line.Components[0];
+            var lineScript = line.BeforePrintEvent.Script;
+            var cellScript = cell.BeforePrintEvent.Script;
+            var lineEnabled = GetEnabledExpression(line);
+            var cellEnabled = GetEnabledExpression(cell);
+            if (!string.IsNullOrEmpty(lineScript) && (!string.IsNullOrEmpty(cellScript) || cellEnabled != null) ||
+                !string.IsNullOrEmpty(cellScript) && lineEnabled != null)
+                return false;
+
+            if (lineEnabled != null && cellEnabled != null)
+            {
+                var and = ConvertSyntaxToCSharp ? "&&" : "AndAlso";
+                cellEnabled.Expression = $"({lineEnabled.Expression}) {and} ({cellEnabled.Expression})";
+            }
+
+            else if (lineEnabled != null)
+            {
+                cell.Expressions.Add(lineEnabled);
+            }
+
+            if (!line.Enabled)
+                cell.Enabled = false;
+
+            if (!string.IsNullOrEmpty(lineScript))
+                cell.BeforePrintEvent.Script = lineScript;
+
+            line.Expressions.Clear();
+            return true;
+        }
+
+        private static StiAppExpression GetEnabledExpression(StiComponent component)
+        {
+            return component.Expressions.Cast<StiAppExpression>().FirstOrDefault(e => e.Name == "Enabled");
         }
 
         #region Process columns
@@ -451,9 +891,8 @@ namespace Stimulsoft.Report.Import
                     var group = groups[groupIndex];
                     var groupHeader = new StiCrossGroupHeaderBand();
                     groupHeader.Name = $"{baseCont.Name}_{levelId}CGh{groupIndex + 1}";
-                    var groupExpr = group.Member.GroupExpressions[0];     //todo use all expressions
-                    groupExpr = groupExpr.Replace(info.DataSetName, info.DataSetName2);
-                    groupHeader.Condition = new StiGroupConditionExpression("{" + groupExpr + "}");
+                    columnGroupNames[groupHeader.Name] = group.Member.GroupName;
+                    ApplyColumnGroup(groupHeader, group.Member, info.DataSetName, info.DataSetName2);
                     AddColumnCellsToContainer2(info, groupHeader, group.GroupHeaderLines, baseCont, newCont);
                 }
 
@@ -560,9 +999,8 @@ namespace Stimulsoft.Report.Import
                     var group = groups[groupIndex];
                     var groupHeader = new StiCrossGroupHeaderBand();
                     groupHeader.Name = $"{baseBand.Name}_{levelId}CGh{groupIndex + 1}";
-                    var groupExpr = group.Member.GroupExpressions[0];     //todo use all expressions
-                    groupExpr = groupExpr.Replace(info.DataSetName, info.DataSetName2);
-                    groupHeader.Condition = new StiGroupConditionExpression("{" + groupExpr + "}");
+                    columnGroupNames[groupHeader.Name] = group.Member.GroupName;
+                    ApplyColumnGroup(groupHeader, group.Member, info.DataSetName, info.DataSetName2);
                     AddColumnHeaderToContainer3(info, groupHeader, group.GroupHeaderLines, baseBand);
                 }
 
@@ -923,22 +1361,30 @@ namespace Stimulsoft.Report.Import
                 else
                     info.ColumnIndex = storedColumnIndex;
 
-                //add header to cells
+                //add header to cells. A member without a header takes no column of the headers, as in
+                //Reporting Services: a group may leave its header to a static member inside it
                 var rowHeight = ScanMembersHeightRecursive(member);
                 for (int index2 = 0; index2 < rowHeight; index2++)
                 {
+                    var rowIndex2 = info.RowIndex + index2;
+                    while (info.Cells.Count < rowIndex2 + 1)
+                        info.Cells.Add(new List<StiComponent>());
+
                     var newComp = member.Header?.Clone() as StiComponent;
-                    if (newComp != null && index2 > 0)
+                    if (newComp == null)
+                        continue;
+
+                    if (index2 > 0)
                         newComp.Name += "_" + index2.ToString();
 
+                    //the copies of the header are merged by the value and the tag, the tag is the expression of
+                    //the text given at the end of the import, see ApplyMergeTags
                     if (newComp is StiText stiText)
-                        stiText.ProcessingDuplicates = StiProcessingDuplicatesType.GlobalMerge;
+                        stiText.ProcessingDuplicates = StiProcessingDuplicatesType.GlobalBasedOnValueAndTagMerge;
+
                     if (newComp is StiImage stiImage)
                         stiImage.ProcessingDuplicates = StiImageProcessingDuplicatesType.GlobalMerge;
 
-                    var rowIndex2 = info.RowIndex + index2; 
-                    while (info.Cells.Count < rowIndex2 + 1)
-                        info.Cells.Add(new List<StiComponent>());
                     while (info.Cells[rowIndex2].Count < info.ColumnIndex + 1)
                         info.Cells[rowIndex2].Add(null);
                     info.Cells[rowIndex2][info.ColumnIndex] = newComp;
@@ -954,28 +1400,35 @@ namespace Stimulsoft.Report.Import
                         bool hasNestedGroup = ScanMembersGroupRecursive(member);
                         if (!hasNestedGroup)
                         {
+                            //a static member of static members takes all their rows, its members are not
+                            //looked at again, so only the first row was taken and the others were lost
+                            var memberLines = Enumerable.Range(info.RowIndex, rowHeight).ToList();
+
                             if (isRoot)
                             {
                                 if (!wasGroup)
-                                    baseGroup.HeaderLines.Add(info.RowIndex);
-                                else
-                                    baseGroup.FooterLines.Add(info.RowIndex);
-                            }
-                            else
-                            {
-                                if (baseGroup.Parent != null)
                                 {
-                                    if (!wasGroup)
-                                        baseGroup.Parent.GroupHeaderLines.Add(info.RowIndex);
-                                    else
-                                        baseGroup.Parent.GroupFooterLines.Add(info.RowIndex);
+                                    baseGroup.HeaderLines.AddRange(memberLines);
+                                    baseGroup.RepeatHeader |= member.RepeatOnNewPage;
                                 }
                                 else
                                 {
-                                    if (!wasGroup)
-                                        baseGroup.GroupHeaderLines.Add(info.RowIndex);
-                                    else
-                                        baseGroup.GroupFooterLines.Add(info.RowIndex);
+                                    baseGroup.FooterLines.AddRange(memberLines);
+                                    baseGroup.RepeatFooter |= member.RepeatOnNewPage;
+                                }
+                            }
+                            else
+                            {
+                                var lineGroup = baseGroup.Parent ?? baseGroup;
+
+                                if (!wasGroup)
+                                {
+                                    lineGroup.GroupHeaderLines.AddRange(memberLines);
+                                    lineGroup.RepeatGroupHeader |= member.RepeatOnNewPage;
+                                }
+                                else
+                                {
+                                    lineGroup.GroupFooterLines.AddRange(memberLines);
                                 }
                             }
                         }
@@ -1016,12 +1469,32 @@ namespace Stimulsoft.Report.Import
                     }
                 }
 
-                info.ColumnIndex++;
+                if (member.Header != null)
+                    info.ColumnIndex++;
+
                 AnalyzeGroupRecursive(member, info, group2 ?? baseGroup, hasGroup);
 
                 info.RowIndex++;
             }
             info.RowIndex--;
+        }
+
+        /// <summary>
+        /// Gives a text merged by the value and the tag the expression of its text as the tag: a text that repeats
+        /// the value and the tag of the text above prints no text when it renders, and the texts merge by their
+        /// tags, not by the texts they print. The tag is given at the end, when the expression of the text is
+        /// final: the scopes of the aggregates are put into the text after the cells are copied.
+        /// </summary>
+        private void ApplyMergeTags()
+        {
+            foreach (var text in report.GetComponents().Cast<StiComponent>().OfType<StiText>())
+            {
+                var isMerged = text.ProcessingDuplicates == StiProcessingDuplicatesType.BasedOnValueAndTagMerge ||
+                    text.ProcessingDuplicates == StiProcessingDuplicatesType.GlobalBasedOnValueAndTagMerge;
+
+                if (isMerged && string.IsNullOrEmpty(text.Tag.Value))
+                    text.Tag = new StiTagExpression(text.Text.Value);
+            }
         }
 
         private int ScanMembersHeightRecursive(TablixMember member)
@@ -1115,8 +1588,17 @@ namespace Stimulsoft.Report.Import
                         break;
 
                     case "Visibility":
-                        var tempText = new StiText();
-                        tablixMember.VisibilityNode = ProcessVisibility(node, tempText, dataSet);
+                        //applied to the bands, the cells or the groups when they are made
+                        if (node["Hidden"] != null)
+                            tablixMember.VisibilityNode = node;
+                        break;
+
+                    case "RepeatOnNewPage":
+                        tablixMember.RepeatOnNewPage = IsTrue(GetNodeTextValue(node));
+                        break;
+
+                    case "KeepTogether":
+                        tablixMember.KeepTogether = IsTrue(GetNodeTextValue(node));
                         break;
 
                     //case "KeepTogether":
@@ -1153,10 +1635,26 @@ namespace Stimulsoft.Report.Import
                         ProcessPageBreakType2(node, dataSet, tablixMember);
                         break;
 
+                    case "DocumentMapLabel":
+                        tablixMember.DocumentMapLabel = ConvertInteractiveValue(node, dataSet);
+                        break;
+
+                    case "Filters":
+                        tablixMember.DetailsFilters = node;
+                        break;
+
                     default:
                         ThrowError(baseNode.Name, node.Name);
                         break;
                 }
+            }
+
+            //the filters of the details take the rows; a filter of a group takes the whole instances of the
+            //group by the values of the group, the data band has no such filter
+            if (tablixMember.DetailsFilters != null && tablixMember.GroupExpressions?.Count > 0)
+            {
+                ThrowError(baseNode.Name, "Filters");
+                tablixMember.DetailsFilters = null;
             }
         }
 
