@@ -31,6 +31,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Stimulsoft.Report.Import
 {
@@ -659,6 +660,14 @@ namespace Stimulsoft.Report.Import
                             arguments[0] = "(" + arguments[0].Trim() + " != null)";
                     }
 
+                    // The function IIF counts both branches, the conditional operator counts the chosen one.
+                    // A branch that can fail, a division by zero as a rule, is guarded by the condition.
+                    if (arguments.Count == 3 && (IsFailingExpression(arguments[1]) || IsFailingExpression(arguments[2])))
+                    {
+                        return "(" + arguments[0].Trim() + " ? " + arguments[1].Trim() + " : " +
+                            arguments[2].Trim() + ")";
+                    }
+
                     return "IIF(" + string.Join(", ", arguments) + ")";
 
                 case "aggregateif":
@@ -1076,6 +1085,18 @@ namespace Stimulsoft.Report.Import
             return type == typeof(string) || type == typeof(object)
                 ? "DateTime.Parse(ToString(" + expression + "))"
                 : expression;
+        }
+
+        /// <summary>
+        /// The converted expression can end with an error on some values: it divides, takes a remainder,
+        /// parses a text or cuts a part of a text.
+        /// </summary>
+        private static bool IsFailingExpression(string expression)
+        {
+            var code = Regex.Replace(expression, @"""(\\.|[^""\\])*""", "\"\"");
+
+            return Regex.IsMatch(code, @"[/%]|\b(Parse|Substring|Remove|Insert|Sqrt|Log|Log10|Mid|Left|Right|" +
+                @"ToInt\w*|ToDouble|ToDecimal|ToDateTime|ChangeType)\s*\(");
         }
 
         /// <summary>
