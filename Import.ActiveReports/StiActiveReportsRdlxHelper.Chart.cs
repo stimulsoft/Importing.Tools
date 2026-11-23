@@ -29,6 +29,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Stimulsoft.Base.Drawing;
@@ -57,6 +58,52 @@ namespace Stimulsoft.Report.Import
         #endregion
 
         #region Fields.Chart
+        /// <summary>
+        /// The colors of the named palettes of a chart of ActiveReports.
+        /// </summary>
+        private static Dictionary<string, string> chartPalettes =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "Standard", "#88bde6 #fbb258 #90cd97 #f6aac9 #bfa554 #bc99c7 #eddd46 #f07e6e #8c8c8c" },
+                { "Cocoa", "#466bb0 #c8b422 #14886e #b54836 #6e5944 #8b3872 #73b22b #b87320 #141414" },
+                { "Coral", "#84d0e0 #f48256 #95c78c #efa5d6 #ba8452 #ab95c2 #ede9d0 #e96b7d #888888" },
+                { "Dark", "#005fad #f06400 #009330 #e400b1 #b65800 #6a279c #d5a211 #dc0127 #000000" },
+                { "HighContrast", "#ff82b0 #0dda2c #0021ab #bcf28c #19c23b #890d3a #607efd #1b7700 #000000" },
+                { "Light", "#ddca9a #778deb #cb9fbb #b5eae2 #7270be #a6c7a7 #9e95c7 #95b0c7 #9b9b9b" },
+                { "Midnight", "#83aaca #e37849 #14a46a #e097da #a26d54 #a584b7 #d89c54 #e86996 #2c343b" },
+                { "Modern", "#2d9fc7 #ec993c #89c235 #e377a4 #a68931 #a672a6 #d0c041 #e35855 #68706a" },
+                { "Organic", "#9c88d9 #a3d767 #8ec3c0 #e9c3a9 #91ab36 #d4ccc0 #61bbd8 #e2d76f #80715a" },
+                { "Slate", "#7493cd #f99820 #71b486 #e4a491 #cb883b #ae83a4 #bacc5c #e5746a #505d65" },
+                { "Zen", "#7bb5ae #e2d287 #92b8da #eac4cb #7b8bbd #c7d189 #b9a0c8 #dfb397 #a9a9a9" },
+                { "Cyborg", "#2a9fd6 #77b300 #9933cc #ff8800 #cc0000 #00cca3 #3d6dcc #525252 #000000" },
+                { "Superhero", "#5cb85c #f0ad4e #5bc0de #d9534f #9f5bde #46db8c #b6b86e #4e5d6c #2b3e4b" },
+                { "Flatly", "#18bc9c #3498db #f39c12 #6cc1be #99a549 #8f54b5 #e74c3c #8a9899 #2c3e50" },
+                { "Darkly", "#375a7f #00bc8c #3498db #f39c12 #e74c3c #8f61b3 #b08725 #4a4949 #000000" },
+                { "Cerulan", "#033e76 #87c048 #59822c #53b3eb #fc6506 #d42323 #e3bb00 #cccccc #222222" },
+                { "Office", "#5b9bd5 #ed7d31 #a5a5a5 #ffc000 #4472c4 #70ad47" },
+                { "Office2010", "#4f81bd #c0504d #9bbb59 #8064a2 #4bacc6 #f79646" },
+                { "Grayscale", "#dddddd #b2b2b2 #969696 #808080 #5f5f5f #4d4d4d" },
+                { "BlueWarm", "#4a66ac #629dd1 #297fd5 #7f8fa9 #5aa2ae #9d90a0" },
+                { "Blue", "#0f6fc6 #009dd9 #0bd0d9 #10cf9b #7cca62 #a5c249" },
+                { "Blue2", "#1cade4 #2683c6 #27ced7 #42ba97 #3e8853 #62a39f" },
+                { "BlueGreen", "#3494ba #58b6c0 #75bda7 #7a8c8e #84acb6 #2683c6" },
+                { "Green", "#549e39 #8ab833 #c0cf3a #029676 #4ab5c4 #0989b1" },
+                { "GreenYellow", "#99cb38 #63a537 #37a76f #44c1a3 #4eb3cf #51c3f9" },
+                { "Yellow", "#ffca08 #f8931d #ce8d3e #ec7016 #e64823 #9c6a6a" },
+                { "YellowOrange", "#f0a22e #a5644e #b58b80 #c3986d #a19574 #c17529" },
+                { "Orange", "#e48312 #bd582c #865640 #9b8357 #c2bc80 #94a088" },
+                { "OrangeRed", "#d34817 #9b2d1f #a28e6a #956251 #918485 #855d5d" },
+                { "RedOrange", "#e84c22 #ffbd47 #b64926 #ff8427 #cc9900 #b22600" },
+                { "Red", "#a5300f #d55816 #e19825 #b19c7d #7f5f52 #b27d49" },
+                { "RedViolet", "#e32d91 #c830cc #4ea6dc #4775e7 #8971e1 #d54773" },
+                { "Violet", "#ad84c6 #8784c7 #5d739a #6997af #84acb6 #6f8183" },
+                { "Violet2", "#92278f #9b57d3 #755dd9 #665eb8 #45a5ed #5982db" },
+                { "Median", "#94b6d2 #dd8047 #a5ab81 #d8b25c #7ba79d #968c8c" },
+                { "Paper", "#a5b592 #f3a447 #e7bc29 #d092a7 #9c85c0 #809ec2" },
+                { "Marquee", "#418ab3 #a6b727 #f69200 #838383 #fec306 #df5327" },
+                { "Slipstream", "#4e67c8 #5eccf3 #a7ea52 #5dceaf #ff8021 #f14124" },
+                { "Aspect", "#f07f09 #9f2936 #1b587c #4e8542 #604878 #c19859" }
+            };
         private Dictionary<StiChart, StiRdlxChartData> chartData = new Dictionary<StiChart, StiRdlxChartData>();
         #endregion
 
@@ -126,6 +173,7 @@ namespace Stimulsoft.Report.Import
             }
 
             ApplyAxisTitles(chart, node);
+            ApplyPalette(chart, node);
 
             return chart;
         }
@@ -199,8 +247,9 @@ namespace Stimulsoft.Report.Import
                 }
 
                 if (series is StiPieSeries && !string.IsNullOrEmpty(category))
-                    SetLegendArguments(chart, series, plot, value.Value);
+                    SetLegendArguments(chart, series, plot, value.Value, scope, columns);
 
+                SetToolTip(series, node, value, scope, columns);
                 AddSeries(chart, series, value.Name, key);
             }
         }
@@ -215,17 +264,36 @@ namespace Stimulsoft.Report.Import
         }
 
         /// <summary>
-        /// The legend of a pie names its slices: an item of the legend shows the category of the slice, and
-        /// the value too when the text of the legend of the plot has the value in it.
+        /// The legend of a pie names its slices. The text of the legend of the plot becomes the argument of
+        /// the series when it is made of the category and the values of the chart. Else an item of the
+        /// legend shows the category of the slice, and the value too when the text has the value in it.
         /// </summary>
-        private static void SetLegendArguments(StiChart chart, StiSeries series, StiRdlxNode plot, string value)
+        private void SetLegendArguments(StiChart chart, StiSeries series, StiRdlxNode plot, string value,
+            StiRdlxScope scope, Dictionary<string, string> columns)
         {
             var color = plot.Child("ColorSeries");
             var text = color == null ? "" : color.Get("Field", "");
+            var argument = text.StartsWith("=")
+                ? ToChartExpression(ConvertToExpression(text, scope), scope, columns)
+                : null;
+
+            if (argument != null && !IsColumn(argument))
+            {
+                series.ArgumentDataColumn = string.Empty;
+                series.Argument.Value = "{" + argument + "}";
+                SetLegendValueType(chart, series, StiSeriesLabelsValueType.Argument);
+                return;
+            }
+
             var field = Regex.Match(value ?? "", @"Fields!\w+\.Value|^\{\w+\}$").Value;
             var hasValue = field.Length > 0 && text.IndexOf(field, StringComparison.OrdinalIgnoreCase) >= 0;
-            var type = hasValue ? StiSeriesLabelsValueType.ArgumentValue : StiSeriesLabelsValueType.Argument;
 
+            SetLegendValueType(chart, series,
+                hasValue ? StiSeriesLabelsValueType.ArgumentValue : StiSeriesLabelsValueType.Argument);
+        }
+
+        private static void SetLegendValueType(StiChart chart, StiSeries series, StiSeriesLabelsValueType type)
+        {
             foreach (var labels in new[] { chart.SeriesLabels, series.SeriesLabels })
             {
                 if (labels == null)
@@ -234,6 +302,65 @@ namespace Stimulsoft.Report.Import
                 labels.LegendValueType = type;
                 labels.ValueTypeSeparator = " ";
             }
+        }
+
+        /// <summary>
+        /// The tooltip of a series is an expression counted for every row of the data of the chart.
+        /// </summary>
+        private void SetToolTip(StiSeries series, StiRdlxNode node, StiRdlxNode value, StiRdlxScope scope,
+            Dictionary<string, string> columns)
+        {
+            var text = value.Get("ToolTip");
+            if (string.IsNullOrEmpty(text) || !text.StartsWith("="))
+                return;
+
+            var expression = ConvertToExpression(text, scope);
+            var toolTip = columns == null ? expression : ToChartExpression(expression, scope, columns);
+
+            if (toolTip == null)
+            {
+                Warn($"The tooltip of the chart '{node.Get("Name")}' reads fields that are not the category or " +
+                    "the values of the chart, it is not imported.");
+                return;
+            }
+
+            series.ToolTip.Value = "{" + toolTip + "}";
+        }
+
+        /// <summary>
+        /// Makes an expression read the columns of the table of a chart: the expressions of the category, of
+        /// the series and of the values are replaced with the columns that hold them. Returns null when the
+        /// chart has no table or the expression reads other columns of the data source.
+        /// </summary>
+        private static string ToChartExpression(string expression, StiRdlxScope scope,
+            Dictionary<string, string> columns)
+        {
+            if (columns == null || scope.DataSet == null)
+                return null;
+
+            var parts = new Dictionary<string, string>(columns, StringComparer.Ordinal);
+
+            foreach (var pair in columns)
+            {
+                var stripped = StripTotal(pair.Key);
+                if (!parts.ContainsKey(stripped))
+                    parts[stripped] = pair.Value;
+            }
+
+            var keys = new List<string>(parts.Keys);
+            keys.Sort((first, second) => second.Length.CompareTo(first.Length));
+
+            var result = expression;
+
+            foreach (var key in keys)
+            {
+                result = Regex.Replace(result, @"(?<![\w.])" + Regex.Escape(key) + @"(?![\w.(])",
+                    parts[key].Replace("$", "$$"));
+            }
+
+            var source = @"(?<![\w.])" + Regex.Escape(scope.DataSet.SourceName) + @"\.";
+
+            return Regex.IsMatch(result, source) ? null : result;
         }
 
         private void AddSeries(StiChart chart, StiSeries series, string name, string key)
@@ -674,8 +801,17 @@ namespace Stimulsoft.Report.Import
                 foreach (var value in series.Items("Values"))
                 {
                     var expression = value.Get("Value") ?? GetEncodingField(value);
-                    if (!string.IsNullOrEmpty(expression))
-                        values.Add(new StiRdlxNode(series.Get("Name", "")) { Value = expression });
+                    if (string.IsNullOrEmpty(expression))
+                        continue;
+
+                    var node = new StiRdlxNode(series.Get("Name", "")) { Value = expression };
+                    var toolTip = series.Child("ToolTip");
+                    var text = toolTip == null ? null : toolTip.Get("Value");
+
+                    if (!string.IsNullOrEmpty(text))
+                        node.Nodes.Add(new StiRdlxNode("ToolTip") { Value = text });
+
+                    values.Add(node);
                 }
             }
 
@@ -798,6 +934,72 @@ namespace Stimulsoft.Report.Import
         {
             var match = Regex.Match(expression, @"^(Sum|Avg|Min|Max|Count|Last|Median)\((.+)\)$");
             return match.Success && match.Groups[2].Value.IndexOf('(') < 0 ? match.Groups[2].Value : expression;
+        }
+
+        /// <summary>
+        /// The colors of the palette of a chart become a chart style of the report, the chart takes it.
+        /// A chart without a palette has the palette Office.
+        /// </summary>
+        private void ApplyPalette(StiChart chart, StiRdlxNode node)
+        {
+            var colors = GetPaletteColors(node);
+            if (colors.Count == 0)
+                return;
+
+            var name = CreateName(node.Get("Name", "Chart") + "Style");
+
+            report.Styles.Add(new StiChartStyle(name)
+            {
+                StyleColors = colors.ToArray(),
+                Brush = chart.Brush,
+                ChartAreaBrush = new StiSolidBrush(Color.Transparent),
+                ChartAreaBorderColor = Color.Transparent,
+                LegendBrush = new StiSolidBrush(Color.Transparent),
+                LegendBorderColor = Color.Transparent,
+                SeriesLabelsBrush = new StiSolidBrush(Color.Transparent),
+                SeriesLabelsBorderColor = Color.Transparent,
+                GridLinesHorColor = Color.FromArgb(50, 105, 105, 105),
+                GridLinesVertColor = Color.FromArgb(50, 105, 105, 105)
+            });
+
+            chart.CustomStyleName = name;
+            chart.Style = new StiCustomStyle(name);
+        }
+
+        private List<Color> GetPaletteColors(StiRdlxNode node)
+        {
+            var colors = new List<Color>();
+            var palette = node.Get("Palette", "Office");
+
+            if (string.Equals(palette, "Custom", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var item in node.Items("CustomPalette"))
+                {
+                    var color = GetColor(item.Value, Color.Empty);
+                    if (!color.IsEmpty)
+                        colors.Add(color);
+                }
+
+                if (colors.Count > 0)
+                    return colors;
+
+                palette = "Office";
+            }
+
+            string values;
+            if (!chartPalettes.TryGetValue(palette, out values))
+            {
+                Warn($"The chart '{node.Get("Name")}' has the palette '{palette}' that is not known, the colors " +
+                    "of the chart are left by default.");
+                return colors;
+            }
+
+            foreach (var value in values.Split(' '))
+            {
+                colors.Add(GetColor(value, Color.Empty));
+            }
+
+            return colors;
         }
 
         private void ApplyAxisTitles(StiChart chart, StiRdlxNode node)
