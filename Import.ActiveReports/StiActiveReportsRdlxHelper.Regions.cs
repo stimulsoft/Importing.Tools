@@ -32,6 +32,7 @@ using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using Stimulsoft.Base.Drawing;
 using Stimulsoft.Report.Components;
+using Stimulsoft.Report.Dictionary;
 
 namespace Stimulsoft.Report.Import
 {
@@ -51,6 +52,11 @@ namespace Stimulsoft.Report.Import
         /// the page breaks of the groups of the table are not imported.
         /// </summary>
         private bool isPageBreakSuppressed;
+
+        /// <summary>
+        /// The copies of the data sets made for the data regions that show the rows of a group.
+        /// </summary>
+        private List<StiRdlxDataSet> groupRowSets = new List<StiRdlxDataSet>();
         #endregion
 
         #region Methods.Regions
@@ -82,7 +88,10 @@ namespace Stimulsoft.Report.Import
         /// </summary>
         private static bool IsCurrentRowRegion(StiRdlxDataSet dataSet, StiRdlxScope scope)
         {
-            return scope.IsRegion && scope.DataSet == dataSet;
+            if (!scope.IsRegion || scope.DataSet == null)
+                return false;
+
+            return scope.DataSet == dataSet || scope.DataSet.Original == dataSet;
         }
 
         private StiRdlxScope CreateRegionScope(StiRdlxDataSet dataSet, StiDataBand band)
@@ -90,24 +99,154 @@ namespace Stimulsoft.Report.Import
             return new StiRdlxScope { DataSet = dataSet, Band = band, IsRegion = true };
         }
 
+        /// <summary>
+        /// The scope of the header and of the footer of a group: the expressions of the group are added to
+        /// the keys of the outer groups.
+        /// </summary>
+        private StiRdlxScope CreateGroupScope(StiRdlxScope scope, StiRdlxNode group)
+        {
+            var result = scope.Clone();
+            result.IsGroupBand = true;
+
+            if (group == null)
+                return result;
+
+            foreach (var expression in group.Items("GroupExpressions"))
+            {
+                if (!string.IsNullOrEmpty(expression.Value))
+                    result.GroupKeys.Add(ConvertToExpression(expression.Value, scope));
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// The scope of the detail rows that are printed inside the groups of the given scope.
+        /// </summary>
+        private static StiRdlxScope CreateDetailScope(StiRdlxScope scope)
+        {
+            var result = scope.Clone();
+            result.IsGroupBand = false;
+
+            return result;
+        }
+
+        /// <summary>
+        /// A data region that stands on a band of a group of its own data set shows the rows of the current
+        /// group. Its data band cannot read the data source of the group, which stands on a row of the
+        /// group, so the region gets a copy of the data set: a virtual source of the same rows. The data
+        /// band of the copy is filtered by the keys of the groups and is initialized anew every time it is
+        /// printed (MultipleInitialization), so the filter is counted for every group. Returns the data set
+        /// itself when the region does not stand on a band of a group of this data set.
+        /// </summary>
+        private StiRdlxDataSet GetGroupRowsDataSet(StiRdlxDataSet dataSet, StiRdlxScope scope)
+        {
+            if (dataSet == null || !scope.IsGroupBand || !IsCurrentRowRegion(dataSet, scope))
+                return dataSet;
+
+            var origin = scope.DataSet;
+            if (origin.Source == null || origin.IsSingleRow)
+                return dataSet;
+
+            // A copy of a copy reads the data set itself: the rows are the same, the chain is shorter.
+            var original = origin.Original ?? origin;
+            var name = CreateName(original.SourceName + "Rows");
+            var source = new StiVirtualSource(original.SourceName, name);
+            var results = new List<string>();
+
+            foreach (StiDataColumn column in origin.Source.Columns)
+            {
+                source.Columns.Add(new StiDataColumn(column.Name, column.Name, column.Alias, column.Type));
+                results.Add(column.Name);
+                results.Add(string.Empty);
+                results.Add(column.Name);
+            }
+
+            source.Results = results.ToArray();
+            report.Dictionary.DataSources.Add(source);
+
+            var copy = new StiRdlxDataSet(origin.Name, origin.Node)
+            {
+                SourceName = name,
+                BaseName = name,
+                Source = source,
+                Original = original,
+                IsFiltered = origin.IsFiltered,
+                IsBuilt = true
+            };
+
+            foreach (var pair in origin.Columns)
+            {
+                copy.Columns[pair.Key] = pair.Value;
+            }
+
+            // The rows of a copy are all the rows of the data set, so a copy of a copy repeats its filters.
+            foreach (var filter in origin.RowFilters)
+            {
+                copy.RowFilters.Add(ReplaceSourceName(filter, origin.SourceName, name));
+            }
+
+            foreach (var key in scope.GroupKeys)
+            {
+                copy.RowFilters.Add(ReplaceSourceName(key, origin.SourceName, name) + " == " + key);
+            }
+
+            if (origin.Parent != null && origin.KeyColumn != null)
+            {
+                copy.RowFilters.Add(name + "." + origin.KeyColumn + " == " + origin.SourceName + "." +
+                    origin.KeyColumn);
+            }
+
+            groupRowSets.Add(copy);
+
+            return copy;
+        }
+
+        /// <summary>
+        /// Makes an expression read another data source.
+        /// </summary>
+        private static string ReplaceSourceName(string expression, string sourceName, string newName)
+        {
+            return Regex.Replace(expression, @"(?<![\w.])" + Regex.Escape(sourceName) + @"\.", newName + ".");
+        }
+
         private StiDataBand CreateDataBand(StiRdlxNode region, StiRdlxDataSet dataSet, StiRdlxScope scope)
         {
             var band = new StiDataBand();
             band.Name = CreateName("DataBand");
-            band.DataSourceName = dataSet.SourceName;
+
+            // The root object of the data has no table: it is one row.
+            if (dataSet.IsSingleRow)
+                band.CountData = 1;
+
+            else
+                band.DataSourceName = dataSet.SourceName;
 
             if (dataSet.Band == null)
                 dataSet.Band = band;
 
             // A nested data set is printed inside a band of its parent: only the rows of the current row of
-            // the parent are left. The tables of a JSON database are filled on demand, so a relation of the
-            // dictionary can not be made of them, a filter by the keys does the same.
-            if (dataSet.Parent != null && dataSet.Rows != null && scope.IsRegion && scope.DataSet == dataSet.Parent)
+            // the parent are left, the ones that have the key written in the column of the array.
+            if (dataSet.Parent != null && dataSet.ParentColumn != null && scope.IsRegion &&
+                scope.DataSet == dataSet.Parent)
             {
-                band.Filters.Add(new StiFilter("{" + dataSet.SourceName + "." + ParentKeyColumn + " == " +
-                    dataSet.Parent.SourceName + "." + KeyColumn + "}"));
+                band.Filters.Add(new StiFilter("{" + dataSet.SourceName + "." + dataSet.KeyColumn + " == " +
+                    dataSet.Parent.SourceName + "." + dataSet.ParentColumn + "}"));
+                band.FilterOn = true;
+
+                // The filter reads the row of the parent, so it is counted anew for every row of the parent.
+                band.MultipleInitialization = true;
+            }
+
+            foreach (var filter in dataSet.RowFilters)
+            {
+                band.Filters.Add(new StiFilter("{" + filter + "}"));
                 band.FilterOn = true;
             }
+
+            // A copy of a data set shows the rows of the current group, with or without filters.
+            if (dataSet.Original != null)
+                band.MultipleInitialization = true;
 
             var regionScope = CreateRegionScope(dataSet, band);
 
@@ -208,6 +347,15 @@ namespace Stimulsoft.Report.Import
 
         private string ConvertFilter(StiRdlxNode filter, StiRdlxScope scope)
         {
+            if (HasUnknownField(filter.Get("FilterExpression"), scope))
+                return null;
+
+            foreach (var value in filter.Items("FilterValues"))
+            {
+                if (HasUnknownField(value.Value, scope))
+                    return null;
+            }
+
             var left = ConvertToExpression(filter.Get("FilterExpression"), scope);
             var values = new List<string>();
 
@@ -261,6 +409,26 @@ namespace Stimulsoft.Report.Import
                     Warn($"The filter operator '{filter.Get("Operator")}' is not imported.");
                     return null;
             }
+        }
+
+        /// <summary>
+        /// The expression of a filter reads a field that no data set has. ActiveReports takes such a field
+        /// as an empty value; a filter of Stimulsoft with an unknown column stops the band, so the filter
+        /// is not imported.
+        /// </summary>
+        private bool HasUnknownField(string expression, StiRdlxScope scope)
+        {
+            foreach (Match match in Regex.Matches(expression ?? "", @"\bFields\s*!\s*(\w+)"))
+            {
+                var field = match.Groups[1].Value;
+                if (FindFieldDataSet(field, scope) != null)
+                    continue;
+
+                Warn($"A filter reads the field '{field}' that is not found in the data sets, it is not imported.");
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -427,6 +595,9 @@ namespace Stimulsoft.Report.Import
             var footerRows = GetRows(table.Child("Footer"));
             var hasRows = GetRows(table.Child("Details")).Count > 0 || table.Items("TableGroups").Count > 0;
 
+            if (hasRows)
+                dataSet = GetGroupRowsDataSet(dataSet, scope);
+
             if (dataSet == null || !hasRows || IsCurrentRowRegion(dataSet, scope))
             {
                 AddStaticTable(table, edges, container, scope);
@@ -457,55 +628,66 @@ namespace Stimulsoft.Report.Import
         /// <summary>
         /// Adds the bands of the groups and of the details of a table: group headers, the data band, group
         /// footers. A grouping of the details is the innermost group: its rows go to the group header.
+        /// The rows of a group get the scope of the group, with the keys of the group and of the outer
+        /// groups: a data region placed in such a row shows the rows of the current group.
         /// </summary>
         private void AddTableDataBands(StiRdlxNode table, double[] edges, StiContainer container,
             StiDataBand dataBand, StiRdlxDataSet dataSet, StiRdlxScope regionScope)
         {
             var details = table.Child("Details");
+            var detailRows = GetRows(details);
+            var groups = table.Items("TableGroups");
             var isSorted = ApplySorting(details, dataBand, dataSet);
             var footers = new List<StiGroupFooterBand>();
             var footerRows = new List<List<StiRdlxNode>>();
+            var footerScopes = new List<StiRdlxScope>();
+            var groupScope = regionScope;
 
-            foreach (var group in table.Items("TableGroups"))
+            for (var index = 0; index < groups.Count; index++)
             {
+                var group = groups[index];
+                var grouping = group.Child("Group", "Grouping");
                 isSorted |= ApplySorting(group, dataBand, dataSet);
 
-                var header = CreateGroupHeader(group.Child("Group", "Grouping"), isSorted, regionScope);
-                AddBand(header, container, AddRows(GetRows(group.Child("Header")), edges, header, 0, regionScope));
+                var header = CreateGroupHeader(grouping, isSorted, regionScope);
+                groupScope = CreateGroupScope(groupScope, grouping);
+                AddBand(header, container, AddRows(GetRows(group.Child("Header")), edges, header, 0, groupScope));
 
                 footers.Add(CreateGroupFooter());
                 footerRows.Add(GetRows(group.Child("Footer")));
+                footerScopes.Add(groupScope);
             }
 
-            var detailRows = GetRows(details);
             var detailGroup = details == null ? null : details.Child("Group", "Grouping");
 
             if (GetGroupExpression(detailGroup) != null)
             {
                 var header = CreateGroupHeader(detailGroup, isSorted, regionScope);
+                var detailGroupScope = CreateGroupScope(groupScope, detailGroup);
                 int nestedRow;
                 double nestedLeft;
                 var nested = FindNestedTable(detailRows, edges, dataSet, out nestedRow, out nestedLeft);
 
                 if (nested == null)
                 {
-                    AddBand(header, container, AddRows(detailRows, edges, header, 0, regionScope));
+                    AddBand(header, container, AddRows(detailRows, edges, header, 0, detailGroupScope));
                     AddBand(dataBand, container, 0);
                 }
                 else
                 {
                     AddNestedTableBands(nested, nestedRow, nestedLeft, detailRows, edges, container, header, dataBand,
-                        dataSet, regionScope);
+                        dataSet, detailGroupScope);
                 }
             }
             else
             {
-                AddBand(dataBand, container, AddRows(detailRows, edges, dataBand, 0, regionScope));
+                AddBand(dataBand, container, AddRows(detailRows, edges, dataBand, 0, CreateDetailScope(groupScope)));
             }
 
             for (var index = footers.Count - 1; index >= 0; index--)
             {
-                AddBand(footers[index], container, AddRows(footerRows[index], edges, footers[index], 0, regionScope));
+                AddBand(footers[index], container,
+                    AddRows(footerRows[index], edges, footers[index], 0, footerScopes[index]));
             }
         }
 
@@ -622,6 +804,8 @@ namespace Stimulsoft.Report.Import
             var group = list.Child("Group", "Grouping");
             var height = ToHi(list.Get("Height"));
 
+            dataSet = GetGroupRowsDataSet(dataSet, scope);
+
             if (dataSet == null || IsCurrentRowRegion(dataSet, scope))
             {
                 var band = CreateStaticBand(height);
@@ -661,6 +845,7 @@ namespace Stimulsoft.Report.Import
             var isSorted = region != null && ApplySorting(region, dataBand, dataSet);
 
             var header = CreateGroupHeader(group, isSorted, regionScope);
+            var groupScope = CreateGroupScope(regionScope, group);
             header.CanBreak = true;
 
             if (isNewPage)
@@ -677,7 +862,7 @@ namespace Stimulsoft.Report.Import
                 }
 
                 AddBand(header, container, bottom);
-                AddItems(items, header, -left, 0, regionScope);
+                AddItems(items, header, -left, 0, groupScope);
                 AddBand(dataBand, container, 0);
                 return;
             }
@@ -701,16 +886,16 @@ namespace Stimulsoft.Report.Import
 
             ApplyFilters(table.Items("Filters"), dataBand, regionScope);
 
-            AddItems(above, header, -left, 0, regionScope);
-            var headerBottom = AddRows(GetRows(table.Child("Header")), edges, header, tableRect.Top, regionScope);
+            AddItems(above, header, -left, 0, groupScope);
+            var headerBottom = AddRows(GetRows(table.Child("Header")), edges, header, tableRect.Top, groupScope);
             AddBand(header, container, headerBottom);
 
             isPageBreakSuppressed = isNewPage;
-            AddTableDataBands(table, edges, container, dataBand, dataSet, regionScope);
+            AddTableDataBands(table, edges, container, dataBand, dataSet, groupScope);
             isPageBreakSuppressed = false;
 
             var footer = CreateGroupFooter();
-            var footerBottom = AddRows(GetRows(table.Child("Footer")), edges, footer, 0, regionScope);
+            var footerBottom = AddRows(GetRows(table.Child("Footer")), edges, footer, 0, groupScope);
 
             // A table of a fixed page keeps the place it may grow into (FixedHeight). The items below it
             // stand after this place and not after the rows drawn in the designer, so the place is not
@@ -731,7 +916,7 @@ namespace Stimulsoft.Report.Import
                 offset = Math.Min(offset, GetRect(item).Top - footerBottom);
             }
 
-            AddItems(below, footer, -left, offset, regionScope);
+            AddItems(below, footer, -left, offset, groupScope);
 
             foreach (var item in below)
             {
@@ -770,36 +955,45 @@ namespace Stimulsoft.Report.Import
         #region Methods.BandedList
         private void BuildBandedList(StiRdlxNode list, StiContainer container, double left, StiRdlxScope scope)
         {
-            var dataSet = GetRegionDataSet(list, scope);
+            var dataSet = GetGroupRowsDataSet(GetRegionDataSet(list, scope), scope);
             var isStatic = dataSet == null || IsCurrentRowRegion(dataSet, scope);
             var dataBand = isStatic ? null : CreateDataBand(list, dataSet, scope);
             var regionScope = isStatic ? scope : CreateRegionScope(dataSet, dataBand);
+            var groupScope = regionScope;
             var footers = new List<StiRdlxNode>();
+            var footerScopes = new List<StiRdlxScope>();
 
             AddListBand(list.Child("Header"), isStatic ? (StiBand)CreateStaticBand(0) : CreateHeaderBand(list),
                 container, left, regionScope);
 
             foreach (var group in list.Items("Groups"))
             {
+                var grouping = group.Child("Group", "Grouping");
                 var header = isStatic
                     ? (StiBand)CreateStaticBand(0)
-                    : CreateGroupHeader(group.Child("Group", "Grouping"), false, regionScope);
+                    : CreateGroupHeader(grouping, false, regionScope);
 
-                if (!AddListBand(group.Child("Header"), header, container, left, regionScope) && !isStatic)
+                if (!isStatic)
+                    groupScope = CreateGroupScope(groupScope, grouping);
+
+                if (!AddListBand(group.Child("Header"), header, container, left, groupScope) && !isStatic)
                     AddBand(header, container, 0);
 
                 footers.Add(group.Child("Footer"));
+                footerScopes.Add(groupScope);
             }
 
+            var detailScope = isStatic ? scope : CreateDetailScope(groupScope);
+
             if (!AddListBand(list.Child("Details"), isStatic ? CreateStaticBand(0) : dataBand, container, left,
-                regionScope) && !isStatic)
+                detailScope) && !isStatic)
                 AddBand(dataBand, container, 0);
 
             for (var index = footers.Count - 1; index >= 0; index--)
             {
                 var footer = isStatic ? (StiBand)CreateStaticBand(0) : CreateGroupFooter();
 
-                if (!AddListBand(footers[index], footer, container, left, regionScope) && !isStatic)
+                if (!AddListBand(footers[index], footer, container, left, footerScopes[index]) && !isStatic)
                     AddBand(footer, container, 0);
             }
 

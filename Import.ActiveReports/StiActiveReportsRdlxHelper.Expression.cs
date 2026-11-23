@@ -650,6 +650,15 @@ namespace Stimulsoft.Report.Import
                     if (arguments.Count == 2)
                         arguments.Add("\"\"");
 
+                    // A condition that is a field of another type than a boolean asks whether the field
+                    // has a value.
+                    if (arguments.Count > 0)
+                    {
+                        var conditionType = GetColumnType(arguments[0].Trim());
+                        if (conditionType != null && conditionType != typeof(bool))
+                            arguments[0] = "(" + arguments[0].Trim() + " != null)";
+                    }
+
                     return "IIF(" + string.Join(", ", arguments) + ")";
 
                 case "aggregateif":
@@ -847,6 +856,10 @@ namespace Stimulsoft.Report.Import
                 dataSet = FindDataSet(scopeName);
                 arguments = arguments.GetRange(0, arguments.Count - 1);
 
+                // Inside a region that shows the rows of a group the data set is its copy.
+                if (dataSet != null && state.Scope.DataSet != null && state.Scope.DataSet.Original == dataSet)
+                    dataSet = state.Scope.DataSet;
+
                 var isWholeRegion = regionNames.Contains(scopeName) ||
                     dataSet != null && dataSet == state.Scope.DataSet;
 
@@ -877,6 +890,11 @@ namespace Stimulsoft.Report.Import
 
             if (isWholeSource)
                 marker = dataSet.SourceName + ", ";
+
+            // A data band that is initialized anew for every outer row gives a right total only by its name.
+            else if (state.Scope.IsRegion && state.Scope.DataSet == dataSet && state.Scope.Band != null &&
+                state.Scope.Band.MultipleInitialization)
+                marker = state.Scope.Band.Name + ", ";
 
             else if (state.AllowBandMarker && dataSet != null &&
                 (!state.Scope.IsRegion || state.Scope.DataSet != dataSet))
@@ -1052,6 +1070,7 @@ namespace Stimulsoft.Report.Import
         /// </summary>
         private string ConvertDateArgument(string expression)
         {
+            expression = expression.Trim();
             var type = GetColumnType(expression);
 
             return type == typeof(string) || type == typeof(object)

@@ -27,6 +27,7 @@
 */
 #endregion Copyright (C) 2003-2026 Stimulsoft
 
+using System.Collections.Generic;
 using Stimulsoft.Report.Components;
 
 namespace Stimulsoft.Report.Import
@@ -49,6 +50,17 @@ namespace Stimulsoft.Report.Import
         /// The item is printed on a band of a data region, so a total without a band is counted by this region.
         /// </summary>
         public bool IsRegion { get; set; }
+
+        /// <summary>
+        /// The item is printed on a band of a group, a header or a footer: a data region of the same data set
+        /// placed here shows the rows of the current group.
+        /// </summary>
+        public bool IsGroupBand { get; set; }
+
+        /// <summary>
+        /// The converted expressions of the groups the item is printed in, the outer group first.
+        /// </summary>
+        public List<string> GroupKeys { get; set; } = new List<string>();
         #endregion
 
         #region Methods
@@ -58,7 +70,9 @@ namespace Stimulsoft.Report.Import
             {
                 DataSet = DataSet,
                 Band = Band,
-                IsRegion = IsRegion
+                IsRegion = IsRegion,
+                IsGroupBand = IsGroupBand,
+                GroupKeys = new List<string>(GroupKeys)
             };
         }
         #endregion

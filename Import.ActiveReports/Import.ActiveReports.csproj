@@ -101,6 +101,8 @@
     <Compile Include="StiActiveReportsRdlxHelper.Style.cs" />
     <Compile Include="StiActiveReportsRdlxHelper.Tablix.cs" />
     <Compile Include="StiActiveReportsRdlxHelper.cs" />
+    <Compile Include="StiRdlxChartData.cs" />
+    <Compile Include="StiRdlxConnection.cs" />
     <Compile Include="StiRdlxDataSet.cs" />
     <Compile Include="StiRdlxExpressionState.cs" />
     <Compile Include="StiRdlxNode.cs" />

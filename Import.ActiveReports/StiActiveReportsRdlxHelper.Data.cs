@@ -29,45 +29,58 @@
 
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Xml;
 using Stimulsoft.Base.Json;
 using Stimulsoft.Base.Json.Linq;
+using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Dictionary;
-using JsonFormatting = Stimulsoft.Base.Json.Formatting;
 
 namespace Stimulsoft.Report.Import
 {
     /// <summary>
     /// The parameters, the data sources and the data sets of the report.
-    /// The data that is available at the import - written in the report itself (jsondata, xmldata) or lying in
-    /// a file beside the report (jsondoc, endpoint, CSV) - is read here: the query of every data set is applied
-    /// and its rows are written into a JSON resource of the report, a table per data set. So the imported
-    /// report keeps its data and does not depend on the query syntax of ActiveReports.
-    /// A data set whose data is on a server gets a JSON database with the address of the service. The import
-    /// itself never asks a server: the table of such a data set is named by the path of its query.
+    /// The data of the report stays as it is. The data written in the report itself (jsondata, xmldata) or
+    /// lying in a file beside the report becomes a resource of the Stimulsoft report with the same content,
+    /// and a database of its kind - JSON, XML or CSV - reads the resource. The data on a server gets
+    /// a database with the address of the service. A data set is a data source of a table of the database:
+    /// its columns are the fields declared in the data set, with their types.
+    /// Everything a data set does with its rows is done by the data sources of Stimulsoft: the filters
+    /// of a data set are the filters of a virtual source, a field of a nested object is read through
+    /// a relation, the rows of a nested array are linked with the row that holds them by the key the database
+    /// gives them, the totals of a chart are counted by a data transformation.
+    /// The import itself never asks a server.
     /// </summary>
     public partial class StiActiveReportsRdlxHelper
     {
         #region Consts.Data
-        private const string EmbeddedDataName = "ReportData";
-        private const string KeyColumn = "_id";
-        private const string ParentKeyColumn = "_parentId";
+        private const string RelationColumn = "relationId";
+
+        /// <summary>
+        /// The ending of the name of a custom property of the report that holds the types of the fields of
+        /// a data set: "Orders_Data_Set_Fields".
+        /// </summary>
+        private const string FieldTypesSuffix = "_Data_Set_Fields";
         #endregion
 
         #region Fields.Data
+        private static readonly Regex FieldTypeRegex = new Regex(
+            @"(?<=.)\[\s*(number|string|boolean|date|datetime)\s*(\|[^\]]*)?\]$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         private Dictionary<string, StiRdlxDataSet> dataSets =
             new Dictionary<string, StiRdlxDataSet>(StringComparer.OrdinalIgnoreCase);
         private List<StiRdlxDataSet> dataSetList = new List<StiRdlxDataSet>();
         private Dictionary<string, StiRdlxNode> dataSourceNodes =
             new Dictionary<string, StiRdlxNode>(StringComparer.OrdinalIgnoreCase);
-        private Dictionary<string, JToken> loadedData = new Dictionary<string, JToken>(StringComparer.Ordinal);
-        private Dictionary<string, List<int>> parentRows = new Dictionary<string, List<int>>();
-        private Dictionary<string, string> remoteDatabases = new Dictionary<string, string>(StringComparer.Ordinal);
-        private JObject embeddedData = new JObject();
+        private Dictionary<string, StiRdlxConnection> connections =
+            new Dictionary<string, StiRdlxConnection>(StringComparer.Ordinal);
+        private Dictionary<string, StiDataSource> objectSources =
+            new Dictionary<string, StiDataSource>(StringComparer.Ordinal);
+        private Dictionary<string, string> objectRelations = new Dictionary<string, string>(StringComparer.Ordinal);
+        private Dictionary<string, Type> fieldTypes = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
         #endregion
 
         #region Methods.Parameters
@@ -159,6 +172,8 @@ namespace Stimulsoft.Report.Import
                     dataSourceNodes[name] = source;
             }
 
+            ReadFieldTypes();
+
             foreach (var node in root.Items("DataSets"))
             {
                 var name = node.Get("Name");
@@ -181,11 +196,6 @@ namespace Stimulsoft.Report.Import
 
             foreach (var dataSet in dataSetList)
             {
-                LoadRows(dataSet);
-            }
-
-            foreach (var dataSet in dataSetList)
-            {
                 BuildDataSource(dataSet);
             }
 
@@ -193,21 +203,58 @@ namespace Stimulsoft.Report.Import
             {
                 AddCalculatedColumns(dataSet);
             }
+
+            foreach (var dataSet in dataSetList)
+            {
+                AddFilteredSource(dataSet);
+            }
         }
 
         /// <summary>
-        /// Writes the data read at the import into a JSON resource of the report. It is called when all
-        /// the report is made: the charts add their own tables to this data.
+        /// The designer of ActiveReportsJS writes the types of the fields of a data set into a custom property
+        /// of the report, named by the data set: {"price":{"dataType":"Float"},"name":{"dataType":"String"}}.
+        /// These types are read first, a column of a field gets the type written here.
         /// </summary>
-        private void AddEmbeddedData()
+        private void ReadFieldTypes()
         {
-            if (embeddedData.Count == 0)
-                return;
+            foreach (var property in root.Items("CustomProperties"))
+            {
+                var name = property.Get("Name", "");
+                var value = property.Get("Value");
 
-            var bytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(embeddedData, JsonFormatting.None));
+                if (!name.EndsWith(FieldTypesSuffix, StringComparison.Ordinal) || string.IsNullOrEmpty(value))
+                    continue;
 
-            report.Dictionary.Resources.Add(new StiResource(EmbeddedDataName, StiResourceType.Json, bytes));
-            report.Dictionary.Databases.Add(new StiJsonDatabase(EmbeddedDataName, "resource://" + EmbeddedDataName));
+                var dataSetName = name.Substring(0, name.Length - FieldTypesSuffix.Length);
+
+                try
+                {
+                    var fields = StiRdlxReader.ParseJson(value) as JObject;
+                    if (fields == null)
+                        continue;
+
+                    foreach (var field in fields.Properties())
+                    {
+                        var description = field.Value as JObject;
+                        var dataType = description == null ? null : description["dataType"];
+                        var type = dataType == null
+                            ? typeof(object)
+                            : GetHintType(dataType.ToString().ToLowerInvariant());
+
+                        if (type != typeof(object))
+                            fieldTypes[GetFieldKey(dataSetName, field.Name)] = type;
+                    }
+                }
+                catch (JsonException)
+                {
+                    Warn($"The types of the fields of the data set '{dataSetName}' are not read.");
+                }
+            }
+        }
+
+        private static string GetFieldKey(string dataSetName, string field)
+        {
+            return dataSetName + "\n" + field;
         }
 
         /// <summary>
@@ -332,538 +379,43 @@ namespace Stimulsoft.Report.Import
 
             return name;
         }
-        #endregion
-
-        #region Methods.Rows
-        /// <summary>
-        /// Reads the rows of a data set when its data is available at the import.
-        /// </summary>
-        private void LoadRows(StiRdlxDataSet dataSet)
-        {
-            if (dataSet.Rows != null)
-                return;
-
-            try
-            {
-                if (dataSet.Parent != null)
-                {
-                    LoadRows(dataSet.Parent);
-                    LoadNestedRows(dataSet);
-                    return;
-                }
-
-                var query = GetQuery(dataSet);
-                StiRdlxNode source;
-                if (!dataSourceNodes.TryGetValue(query.Get("DataSourceName", ""), out source))
-                    return;
-
-                var connection = source.Child("ConnectionProperties") ?? new StiRdlxNode("ConnectionProperties");
-                var command = ParsePairs(query.Get("CommandText", ""), "jpath");
-                var data = LoadData(connection, command);
-                if (data == null)
-                    return;
-
-                dataSet.Rows = SelectRows(data, GetPair(command, "jpath"));
-
-                // The filters that compare fields with constants are applied here, to the rows written into
-                // the report, so the bands and the charts get the data already filtered.
-                var filters = dataSet.Node.Items("Filters");
-                if (filters.Count > 0 && AreStaticFilters(filters, dataSet))
-                {
-                    dataSet.Rows = FilterRows(dataSet.Rows, filters, dataSet, isTable: false);
-                    dataSet.IsFiltered = true;
-                }
-            }
-            catch (Exception e)
-            {
-                Warn($"The data of the data set '{dataSet.Name}' is not read: {e.Message}");
-            }
-        }
-
-        private void LoadNestedRows(StiRdlxDataSet dataSet)
-        {
-            if (dataSet.Parent.Rows == null)
-                return;
-
-            var rows = new List<JObject>();
-            var parents = new List<int>();
-
-            for (var index = 0; index < dataSet.Parent.Rows.Count; index++)
-            {
-                var token = dataSet.ParentField.Length == 0
-                    ? dataSet.Parent.Rows[index]
-                    : SelectField(dataSet.Parent.Rows[index], dataSet.ParentField);
-
-                foreach (var row in ToRows(token))
-                {
-                    rows.Add(row);
-                    parents.Add(index);
-                }
-            }
-
-            dataSet.Rows = rows;
-            parentRows[dataSet.Name] = parents;
-        }
 
         /// <summary>
-        /// Loads the data of a data source: JSON, XML or CSV written in the connection string or lying in
-        /// a file beside the report. Returns null when the data is on a server or is not found.
+        /// The name of a new column of a data source, one that the data source does not have yet.
         /// </summary>
-        private JToken LoadData(StiRdlxNode connection, Dictionary<string, string> command)
+        private static string CreateColumnName(string field, StiDataSource source)
         {
-            var connectString = connection.Get("ConnectString", "");
-            if (connectString.StartsWith("="))
-                return null;
+            var baseName = CreateColumnName(field);
+            var name = baseName;
+            var index = 2;
 
-            var separator = connectString.IndexOf('=');
-            if (separator < 0)
-                return null;
-
-            var kind = connectString.Substring(0, separator).Trim().ToLowerInvariant();
-            var value = connectString.Substring(separator + 1);
-
-            switch (kind)
+            while (source.Columns[name] != null)
             {
-                case "jsondata":
-                    return LoadCached("json:" + value, value, isFile: false);
-
-                case "xmldata":
-                    return LoadXmlData(value, GetPair(command, "jpath"));
-
-                case "jsondoc":
-                case "endpoint":
-                case "csvdoc":
-                    var path = value.Split(';')[0].Trim() + GetPair(command, "uri");
-                    if (path.Length == 0 || IsUrl(path) || dataFolder == null)
-                        return null;
-
-                    var file = Path.Combine(dataFolder, path.TrimStart('/', '\\'));
-                    return File.Exists(file) ? LoadCached("file:" + file, file, isFile: true) : null;
-
-                default:
-                    return null;
-            }
-        }
-
-        private JToken LoadCached(string key, string value, bool isFile)
-        {
-            JToken data;
-            if (loadedData.TryGetValue(key, out data))
-                return data;
-
-            if (!isFile)
-                data = ParseEmbeddedJson(value);
-
-            else if (value.EndsWith(".csv", StringComparison.OrdinalIgnoreCase))
-                data = ParseCsv(File.ReadAllText(value));
-
-            else
-                data = StiRdlxReader.ParseJson(File.ReadAllText(value));
-
-            loadedData[key] = data;
-            return data;
-        }
-
-        /// <summary>
-        /// Parses the JSON written in a connection string. Some designers write it escaped, with "\n" and
-        /// "\"" as two characters each.
-        /// </summary>
-        private static JToken ParseEmbeddedJson(string value)
-        {
-            try
-            {
-                return StiRdlxReader.ParseJson(value);
-            }
-            catch (JsonException)
-            {
-                var text = value.Replace("\\r", " ").Replace("\\n", " ").Replace("\\t", " ").Replace("\\\"", "\"");
-                return StiRdlxReader.ParseJson(text);
-            }
-        }
-
-        /// <summary>
-        /// Reads the rows of XML data: the query is the path to the elements of the rows.
-        /// </summary>
-        private static JToken LoadXmlData(string xml, string path)
-        {
-            var doc = new XmlDocument();
-            doc.LoadXml(xml);
-
-            var rows = new JArray();
-            var nodes = string.IsNullOrEmpty(path)
-                ? doc.DocumentElement.ChildNodes
-                : doc.SelectNodes("/" + path.TrimStart('/'));
-
-            foreach (XmlNode node in nodes)
-            {
-                var element = node as XmlElement;
-                if (element == null)
-                    continue;
-
-                var row = new JObject();
-
-                foreach (XmlAttribute attribute in element.Attributes)
-                {
-                    row[attribute.LocalName] = attribute.Value;
-                }
-
-                foreach (XmlNode child in element.ChildNodes)
-                {
-                    if (child is XmlElement)
-                        row[child.LocalName] = ToJsonValue(child.InnerText);
-                }
-
-                rows.Add(row);
-            }
-
-            return rows;
-        }
-
-        private static JToken ParseCsv(string text)
-        {
-            var rows = new JArray();
-            text = text.TrimStart((char)0xFEFF);
-            string[] header = null;
-
-            foreach (var line in SplitCsv(text))
-            {
-                if (header == null)
-                {
-                    header = line.ToArray();
-                    continue;
-                }
-
-                var row = new JObject();
-
-                for (var index = 0; index < header.Length && index < line.Count; index++)
-                {
-                    row[header[index].Trim()] = ToJsonValue(line[index]);
-                }
-
-                rows.Add(row);
-            }
-
-            return rows;
-        }
-
-        private static List<List<string>> SplitCsv(string text)
-        {
-            var lines = new List<List<string>>();
-            var line = new List<string>();
-            var value = new StringBuilder();
-            var isQuoted = false;
-
-            for (var index = 0; index < text.Length; index++)
-            {
-                var ch = text[index];
-
-                if (isQuoted)
-                {
-                    if (ch != '"')
-                        value.Append(ch);
-
-                    else if (index + 1 < text.Length && text[index + 1] == '"')
-                        value.Append(text[++index]);
-
-                    else
-                        isQuoted = false;
-                }
-                else if (ch == '"')
-                {
-                    isQuoted = true;
-                }
-                else if (ch == ',')
-                {
-                    line.Add(value.ToString());
-                    value.Clear();
-                }
-                else if (ch == '\n')
-                {
-                    line.Add(value.ToString());
-                    value.Clear();
-
-                    if (line.Count > 1 || line[0].Length > 0)
-                        lines.Add(line);
-
-                    line = new List<string>();
-                }
-                else if (ch != '\r')
-                {
-                    value.Append(ch);
-                }
-            }
-
-            line.Add(value.ToString());
-
-            if (line.Count > 1 || line[0].Length > 0)
-                lines.Add(line);
-
-            return lines;
-        }
-
-        /// <summary>
-        /// A value of text data: a number when the text is a number, else the text.
-        /// </summary>
-        private static JToken ToJsonValue(string text)
-        {
-            decimal number;
-            if (decimal.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out number) &&
-                (text.Length < 2 || text[0] != '0' || text[1] == '.'))
-                return new JValue(number);
-
-            return new JValue(text);
-        }
-
-        /// <summary>
-        /// Applies the JSONPath of the query. An array that the path gives is opened into its items.
-        /// </summary>
-        private List<JObject> SelectRows(JToken data, string path)
-        {
-            path = (path ?? "").Trim();
-
-            if (path.Length == 0 || path == "*")
-                path = "$";
-
-            if (!path.StartsWith("$"))
-                path = "$." + path;
-
-            path = path.Replace(".[", "[");
-
-            // The path of the root alone selects nothing in the JSON library, the root is taken as it is.
-            if (path == "$")
-                return ToRows(data);
-
-            // ActiveReports takes ".*" and "[*]" as the same: all the items of an array or of an object.
-            // The JSON library takes the first only for an object and the second only for an array.
-            var paths = new[] { path, path.Replace(".*", "[*]"), path.Replace("[*]", ".*") };
-            var rows = new List<JObject>();
-
-            foreach (var candidate in paths)
-            {
-                foreach (var token in data.SelectTokens(candidate))
-                {
-                    rows.AddRange(ToRows(token));
-                }
-
-                if (rows.Count > 0)
-                    break;
-            }
-
-            return rows;
-        }
-
-        private static List<JObject> ToRows(JToken token)
-        {
-            var rows = new List<JObject>();
-
-            var array = token as JArray;
-            if (array != null)
-            {
-                foreach (var item in array)
-                {
-                    rows.AddRange(ToRows(item));
-                }
-            }
-            else if (token is JObject)
-            {
-                rows.Add((JObject)token);
-            }
-            else if (token is JValue && token.Type != JTokenType.Null)
-            {
-                rows.Add(new JObject { ["Value"] = token.DeepClone() });
-            }
-
-            return rows;
-        }
-
-        /// <summary>
-        /// Reads a field of a row. The name may be a path through nested objects ("address.city") and may
-        /// end with the type of the value in brackets ("price[Number]").
-        /// </summary>
-        private static JToken SelectField(JObject row, string dataField)
-        {
-            var path = StripFieldType(dataField);
-
-            JToken token;
-            if (row.TryGetValue(path, out token))
-                return token;
-
-            JToken current = row;
-
-            foreach (var part in path.Split('.'))
-            {
-                var obj = current as JObject;
-                if (obj == null || !obj.TryGetValue(part, out current))
-                    return null;
-            }
-
-            return current;
-        }
-
-        private static string StripFieldType(string dataField)
-        {
-            var bracket = dataField.LastIndexOf('[');
-
-            return bracket > 0 && dataField.EndsWith("]") ? dataField.Substring(0, bracket) : dataField;
-        }
-
-        private static string GetFieldTypeHint(string dataField)
-        {
-            var bracket = dataField.LastIndexOf('[');
-
-            return bracket > 0 && dataField.EndsWith("]")
-                ? dataField.Substring(bracket + 1, dataField.Length - bracket - 2).ToLowerInvariant()
-                : "";
-        }
-
-        /// <summary>
-        /// Returns the field of a filter that compares a plain field with constants, null for other filters.
-        /// </summary>
-        private static string GetStaticFilterField(StiRdlxNode filter)
-        {
-            var match = Regex.Match(filter.Get("FilterExpression", ""), @"^=\s*Fields!(\w+)\.Value\s*$|^\{(\w+)\}$");
-            var values = filter.Items("FilterValues");
-
-            if (!match.Success || values.Count == 0)
-                return null;
-
-            foreach (var value in values)
-            {
-                if (value.Value == null || value.Value.StartsWith("=") || value.Value.IndexOf('{') >= 0)
-                    return null;
-            }
-
-            switch (filter.Get("Operator", "Equal").ToLowerInvariant())
-            {
-                case "equal":
-                case "notequal":
-                case "greaterthan":
-                case "greaterthanorequal":
-                case "lessthan":
-                case "lessthanorequal":
-                case "in":
-                    return match.Groups[1].Value + match.Groups[2].Value;
-
-                case "between":
-                    return values.Count >= 2 ? match.Groups[1].Value + match.Groups[2].Value : null;
-
-                default:
-                    return null;
-            }
-        }
-
-        /// <summary>
-        /// All the filters compare fields of the data set with constants.
-        /// </summary>
-        private static bool AreStaticFilters(List<StiRdlxNode> filters, StiRdlxDataSet dataSet)
-        {
-            foreach (var filter in filters)
-            {
-                var field = GetStaticFilterField(filter);
-                if (field == null || !dataSet.Columns.ContainsKey(field))
-                    return false;
-            }
-
-            return true;
-        }
-
-        /// <summary>
-        /// Leaves the rows that pass the filters. The rows are either the rows of the source data, read by
-        /// the data fields of the data set, or the rows of the table of the report data, read by the columns.
-        /// </summary>
-        private static List<JObject> FilterRows(IEnumerable<JObject> rows, List<StiRdlxNode> filters,
-            StiRdlxDataSet dataSet, bool isTable)
-        {
-            var result = new List<JObject>();
-
-            foreach (var row in rows)
-            {
-                var isAccepted = true;
-
-                foreach (var filter in filters)
-                {
-                    var field = GetStaticFilterField(filter);
-                    var value = isTable ? row[dataSet.Columns[field]] : SelectField(row, GetDataField(dataSet, field));
-
-                    if (!IsFilterPassed(value, filter))
-                    {
-                        isAccepted = false;
-                        break;
-                    }
-                }
-
-                if (isAccepted)
-                    result.Add(row);
-            }
-
-            return result;
-        }
-
-        private static string GetDataField(StiRdlxDataSet dataSet, string name)
-        {
-            foreach (var field in dataSet.Node.Items("Fields"))
-            {
-                if (string.Equals(field.Get("Name"), name, StringComparison.OrdinalIgnoreCase))
-                    return field.Get("DataField", name);
+                name = baseName + index++;
             }
 
             return name;
         }
 
-        private static bool IsFilterPassed(JToken value, StiRdlxNode filter)
+        /// <summary>
+        /// The data field without the type written after its name. A name in brackets, "['Net Income']",
+        /// is not a type.
+        /// </summary>
+        private static string StripFieldType(string dataField)
         {
-            var values = filter.Items("FilterValues");
-            var result = CompareFilterValue(value, values[0].Value);
+            var match = FieldTypeRegex.Match(dataField);
 
-            switch (filter.Get("Operator", "Equal").ToLowerInvariant())
-            {
-                case "notequal":
-                    return result != 0;
-
-                case "greaterthan":
-                    return result > 0;
-
-                case "greaterthanorequal":
-                    return result >= 0;
-
-                case "lessthan":
-                    return result < 0;
-
-                case "lessthanorequal":
-                    return result <= 0;
-
-                case "between":
-                    return result >= 0 && CompareFilterValue(value, values[1].Value) <= 0;
-
-                case "in":
-                    foreach (var item in values)
-                    {
-                        if (CompareFilterValue(value, item.Value) == 0)
-                            return true;
-                    }
-
-                    return false;
-
-                default:
-                    return result == 0;
-            }
+            return match.Success ? dataField.Substring(0, match.Index) : dataField;
         }
 
         /// <summary>
-        /// Compares a value of a row with a constant: as numbers when both are numbers, else as texts.
+        /// The type written after the name of a data field: "price[Number]", "date[Date|M/D/YYYY]".
         /// </summary>
-        private static int CompareFilterValue(JToken value, string constant)
+        private static string GetFieldTypeHint(string dataField)
         {
-            var text = value == null || value.Type == JTokenType.Null ? "" : value.ToString();
+            var match = FieldTypeRegex.Match(dataField);
 
-            double left;
-            double right;
-
-            if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out left) &&
-                double.TryParse(constant, NumberStyles.Float, CultureInfo.InvariantCulture, out right))
-                return left.CompareTo(right);
-
-            return string.Compare(text, constant, StringComparison.OrdinalIgnoreCase);
+            return match.Success ? match.Groups[1].Value.ToLowerInvariant() : "";
         }
 
         /// <summary>
@@ -907,6 +459,333 @@ namespace Stimulsoft.Report.Import
         {
             return path.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+        }
+        #endregion
+
+        #region Methods.Connections
+        /// <summary>
+        /// Returns the database of the data of a data source, null when the data has no database: the
+        /// connection string is an expression or is of an unknown kind.
+        /// </summary>
+        private StiRdlxConnection GetConnection(StiRdlxDataSet dataSet, StiRdlxNode sourceNode, string connectString,
+            Dictionary<string, string> command)
+        {
+            var separator = connectString.IndexOf('=');
+            if (separator <= 0)
+                return null;
+
+            var sourceName = sourceNode.Get("Name", "Data");
+            var kind = connectString.Substring(0, separator).Trim().ToLowerInvariant();
+            var value = connectString.Substring(separator + 1);
+
+            switch (kind)
+            {
+                case "jsondata":
+                    // A description of the data may follow the data itself.
+                    var schema = Regex.Match(value, @";\s*schemadata\s*=");
+                    if (schema.Success)
+                        value = value.Substring(0, schema.Index);
+
+                    var json = GetEmbeddedJson(value, dataSet);
+                    if (json == null)
+                        return null;
+
+                    return GetResourceConnection("data:" + sourceName, sourceName, StiResourceType.Json,
+                        Encoding.UTF8.GetBytes(json));
+
+                case "xmldata":
+                    return GetResourceConnection("data:" + sourceName, sourceName, StiResourceType.Xml,
+                        Encoding.UTF8.GetBytes(value));
+
+                case "jsondoc":
+                case "endpoint":
+                case "csvdoc":
+                    var address = value.Split(';')[0].Trim() + GetPair(command, "uri");
+                    if (address.Length == 0)
+                        return null;
+
+                    return GetAddressConnection(dataSet, sourceName, address);
+
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>
+        /// The JSON written in a connection string. Some designers write it escaped, with a backslash
+        /// before every quote and with a line break as a backslash and the letter n. Such a text is
+        /// unescaped, a JSON database can not read it otherwise.
+        /// Returns null when the text is not a JSON.
+        /// </summary>
+        private string GetEmbeddedJson(string value, StiRdlxDataSet dataSet)
+        {
+            var text = UnescapeJson(value);
+
+            // An escaped text is unescaped before the first reading: the reading of a wrong JSON ends with
+            // an exception.
+            if (IsEscapedJson(value) && IsJson(text))
+                return text;
+
+            if (IsJson(value))
+                return value;
+
+            if (IsJson(text))
+                return text;
+
+            Warn($"The data of the data set '{dataSet.Name}' is not a correct JSON.");
+            return null;
+        }
+
+        /// <summary>
+        /// A backslash stands right after the opening bracket of the text: a JSON has a backslash only
+        /// inside its strings, so the text is an escaped one.
+        /// </summary>
+        private static bool IsEscapedJson(string value)
+        {
+            var text = value.TrimStart();
+            if (text.Length == 0 || (text[0] != '{' && text[0] != '['))
+                return false;
+
+            text = text.Substring(1).TrimStart();
+            return text.Length > 0 && text[0] == '\\';
+        }
+
+        private static string UnescapeJson(string value)
+        {
+            var builder = new StringBuilder(value.Length);
+
+            for (var index = 0; index < value.Length; index++)
+            {
+                var ch = value[index];
+
+                if (ch != '\\' || index + 1 >= value.Length)
+                {
+                    builder.Append(ch);
+                    continue;
+                }
+
+                var next = value[++index];
+
+                switch (next)
+                {
+                    case 'n':
+                    case 'r':
+                    case 't':
+                        builder.Append(' ');
+                        break;
+
+                    case '"':
+                    case '\\':
+                        builder.Append(next);
+                        break;
+
+                    default:
+                        builder.Append(ch).Append(next);
+                        break;
+                }
+            }
+
+            return builder.ToString();
+        }
+
+        private static bool IsJson(string text)
+        {
+            try
+            {
+                StiRdlxReader.ParseJson(text);
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// The database of a file or of a service. A file found beside the report is put into the report
+        /// as a resource, as it is.
+        /// </summary>
+        private StiRdlxConnection GetAddressConnection(StiRdlxDataSet dataSet, string sourceName, string address)
+        {
+            StiRdlxConnection connection;
+            if (connections.TryGetValue(address, out connection))
+                return connection;
+
+            var isCsv = address.EndsWith(".csv", StringComparison.OrdinalIgnoreCase);
+
+            if (!IsUrl(address) && dataFolder != null)
+            {
+                var file = Path.Combine(dataFolder, address.TrimStart('/', '\\'));
+
+                if (File.Exists(file))
+                {
+                    connection = GetResourceConnection(address, Path.GetFileNameWithoutExtension(file),
+                        isCsv ? StiResourceType.Csv : StiResourceType.Json, File.ReadAllBytes(file));
+
+                    return connection;
+                }
+            }
+
+            if (!IsUrl(address))
+                Warn($"The data file '{address}' of the data set '{dataSet.Name}' is not found beside the report.");
+
+            var name = CreateName(sourceName);
+            connection = new StiRdlxConnection(name, !isCsv);
+
+            if (isCsv)
+                report.Dictionary.Databases.Add(new StiCsvDatabase(name, address));
+
+            else
+                report.Dictionary.Databases.Add(CreateJsonDatabase(name, address));
+
+            connections[address] = connection;
+            return connection;
+        }
+
+        /// <summary>
+        /// Puts the data into a resource of the report and adds a database that reads the resource.
+        /// </summary>
+        private StiRdlxConnection GetResourceConnection(string key, string preferredName, StiResourceType type,
+            byte[] content)
+        {
+            StiRdlxConnection connection;
+            if (connections.TryGetValue(key, out connection))
+                return connection;
+
+            var name = CreateName(preferredName);
+            var path = "resource://" + name;
+            StiFileDatabase database;
+
+            switch (type)
+            {
+                case StiResourceType.Xml:
+                    database = new StiXmlDatabase(name, path);
+                    database.CastToColumnType = StiColumnTypeProcessing.CastToColumnType;
+                    break;
+
+                case StiResourceType.Csv:
+                    database = new StiCsvDatabase(name, path);
+                    database.CastToColumnType = StiColumnTypeProcessing.CastToColumnType;
+                    break;
+
+                default:
+                    database = CreateJsonDatabase(name, path);
+                    break;
+            }
+
+            report.Dictionary.Resources.Add(new StiResource(name, type, content));
+            report.Dictionary.Databases.Add(database);
+
+            connection = new StiRdlxConnection(name, type == StiResourceType.Json);
+            connection.Tables = GetTableNames(database);
+            connections[key] = connection;
+
+            return connection;
+        }
+
+        /// <summary>
+        /// A JSON database that gives a column the type declared in the data source: a number or a date
+        /// written as a text becomes a number or a date.
+        /// </summary>
+        private static StiJsonDatabase CreateJsonDatabase(string name, string path)
+        {
+            var database = new StiJsonDatabase(name, path);
+            database.CastToColumnType = StiColumnTypeProcessing.CastToColumnType;
+
+            return database;
+        }
+
+        /// <summary>
+        /// The names of the tables the database makes of the data of a resource.
+        /// </summary>
+        private List<string> GetTableNames(StiFileDatabase database)
+        {
+            try
+            {
+                var information = database.GetDatabaseInformation(report);
+                if (information == null)
+                    return null;
+
+                var tables = new List<string>();
+
+                foreach (DataTable table in information.Tables)
+                {
+                    tables.Add(table.TableName);
+                }
+
+                return tables;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private static List<string> GetPathNames(string path)
+        {
+            var names = new List<string>();
+
+            foreach (Match match in Regex.Matches(path ?? "", @"[\p{L}_][\p{L}\p{N}_]*"))
+            {
+                names.Add(match.Value);
+            }
+
+            return names;
+        }
+
+        /// <summary>
+        /// The table of the database that holds the rows the path points to. A JSON database names the table
+        /// of an array by the names of the path to it; when the root of the data has plain properties beside
+        /// the arrays, as an answer of OData has, the names get the prefix "root". Returns null when the
+        /// database has no such table.
+        /// </summary>
+        private static string FindTable(StiRdlxConnection connection, List<string> names)
+        {
+            var joined = string.Join("_", names);
+
+            if (connection.Tables == null)
+            {
+                if (!connection.IsJson)
+                    return names.Count == 0 ? null : names[names.Count - 1];
+
+                if (names.Count == 0)
+                    return "root";
+
+                return names[0] == "value" ? "root_" + joined : joined;
+            }
+
+            if (!connection.IsJson)
+            {
+                if (names.Count > 0 && connection.Tables.Contains(names[names.Count - 1]))
+                    return names[names.Count - 1];
+
+                return connection.Tables.Count > 0 ? connection.Tables[0] : null;
+            }
+
+            if (names.Count == 0)
+                return connection.Tables.Contains("root") ? "root" : null;
+
+            if (connection.Tables.Contains(joined))
+                return joined;
+
+            if (connection.Tables.Contains("root_" + joined))
+                return "root_" + joined;
+
+            // A path with a wildcard in the middle has no names for a part of the way.
+            string found = null;
+
+            foreach (var table in connection.Tables)
+            {
+                if (!table.EndsWith("_" + joined, StringComparison.Ordinal))
+                    continue;
+
+                if (found != null)
+                    return null;
+
+                found = table;
+            }
+
+            return found;
         }
         #endregion
 
@@ -970,26 +849,33 @@ namespace Stimulsoft.Report.Import
         #endregion
 
         #region Methods.DataSources
+        /// <summary>
+        /// Makes the data source of a data set. The data source of the parent of a nested data set is made
+        /// first.
+        /// </summary>
         private void BuildDataSource(StiRdlxDataSet dataSet)
         {
-            if (dataSet.Rows != null)
+            if (dataSet.IsBuilt)
+                return;
+
+            dataSet.IsBuilt = true;
+
+            // The rows of a data set with filters are filtered by a virtual source that takes the name of
+            // the data set, the data source of the table gets another name.
+            dataSet.BaseName = dataSet.Node.Items("Filters").Count > 0
+                ? CreateName(dataSet.SourceName + "All")
+                : dataSet.SourceName;
+
+            if (dataSet.Parent != null)
             {
-                BuildEmbeddedSource(dataSet);
+                BuildDataSource(dataSet.Parent);
+                BuildNestedSource(dataSet);
                 return;
             }
 
             var query = GetQuery(dataSet);
             StiRdlxNode sourceNode;
             dataSourceNodes.TryGetValue(query.Get("DataSourceName", ""), out sourceNode);
-
-            if (dataSet.Parent != null)
-            {
-                // The rows of the parent are not known, so the nested rows are not known either.
-                dataSet.Source = new StiDataTableSource(dataSet.SourceName, dataSet.SourceName, dataSet.Name);
-                AddDeclaredColumns(dataSet, dataSet.Source);
-                report.Dictionary.DataSources.Add(dataSet.Source);
-                return;
-            }
 
             var connection = sourceNode == null ? null : sourceNode.Child("ConnectionProperties");
             var provider = connection == null ? "" : connection.Get("DataProvider", "").ToUpperInvariant();
@@ -998,40 +884,265 @@ namespace Stimulsoft.Report.Import
 
             StiDataSource source;
 
-            if (provider.StartsWith("JSON") || provider == "CSV")
+            if (provider.StartsWith("JSON") || provider == "CSV" || provider == "XML")
             {
-                source = CreateRemoteSource(dataSet, connectString, commandText);
+                source = CreateFileSource(dataSet, sourceNode, connectString, commandText);
+                if (source == null)
+                    return;
             }
             else if (provider.Contains("OLEDB"))
             {
                 var database = AddDatabase(new StiOleDbDatabase(), sourceNode, connectString);
-                source = new StiOleDbSource(database, dataSet.SourceName, dataSet.Name, commandText);
+                source = new StiOleDbSource(database, dataSet.BaseName, GetBaseAlias(dataSet), commandText);
+                AddDeclaredColumns(dataSet, source);
             }
             else if (provider.Contains("ODBC"))
             {
                 var database = AddDatabase(new StiOdbcDatabase(), sourceNode, connectString);
-                source = new StiOdbcSource(database, dataSet.SourceName, dataSet.Name, commandText);
+                source = new StiOdbcSource(database, dataSet.BaseName, GetBaseAlias(dataSet), commandText);
+                AddDeclaredColumns(dataSet, source);
             }
             else if (provider.Contains("SQL"))
             {
                 var database = AddDatabase(new StiSqlDatabase(), sourceNode, connectString);
-                source = new StiSqlSource(database, dataSet.SourceName, dataSet.Name, commandText);
+                source = new StiSqlSource(database, dataSet.BaseName, GetBaseAlias(dataSet), commandText);
+                AddDeclaredColumns(dataSet, source);
             }
             else
             {
                 Warn($"The data provider '{provider}' of the data set '{dataSet.Name}' is not supported, " +
                     "the data source is added without a connection.");
-                source = new StiDataTableSource(dataSet.SourceName, dataSet.SourceName, dataSet.Name);
+                source = CreateEmptySource(dataSet);
             }
-
-            AddDeclaredColumns(dataSet, source);
 
             dataSet.Source = source;
             report.Dictionary.DataSources.Add(source);
         }
 
+        private static string GetBaseAlias(StiRdlxDataSet dataSet)
+        {
+            return dataSet.BaseName == dataSet.SourceName ? dataSet.Name : dataSet.BaseName;
+        }
+
         /// <summary>
-        /// Adds the columns of the fields declared in the data set, their data is not known at the import.
+        /// A data source without a connection: the data of the data set is not found.
+        /// </summary>
+        private StiDataSource CreateEmptySource(StiRdlxDataSet dataSet)
+        {
+            var source = new StiDataTableSource(dataSet.BaseName, dataSet.BaseName, GetBaseAlias(dataSet));
+            AddDeclaredColumns(dataSet, source);
+
+            return source;
+        }
+
+        /// <summary>
+        /// The data source of a data set that reads JSON, XML or CSV: a table of the database of the data.
+        /// Returns null when the data set is the root object of the data and has no table.
+        /// </summary>
+        private StiDataSource CreateFileSource(StiRdlxDataSet dataSet, StiRdlxNode sourceNode, string connectString,
+            string commandText)
+        {
+            if (commandText.StartsWith("=") || connectString.StartsWith("="))
+            {
+                Warn($"The query of the data set '{dataSet.Name}' is an expression, the address of its data " +
+                    "is not known.");
+            }
+
+            var command = ParsePairs(commandText.StartsWith("=") ? "" : commandText, "jpath");
+
+            if (!connectString.StartsWith("="))
+                dataSet.Connection = GetConnection(dataSet, sourceNode, connectString, command);
+
+            if (dataSet.Connection == null)
+            {
+                Warn($"The data of the data set '{dataSet.Name}' is not found, the data source is added " +
+                    "without a connection.");
+                return CreateEmptySource(dataSet);
+            }
+
+            var path = GetPair(command, "jpath");
+
+            if (Regex.IsMatch(path, @"\[\s*\?|\[\s*\d|\.\."))
+            {
+                Warn($"The path '{path}' of the data set '{dataSet.Name}' has a condition, an index or a search " +
+                    "in depth, the data set reads all the rows of the table.");
+            }
+
+            dataSet.PathNames = GetPathNames(Regex.Replace(path, @"\[\s*\?.*?\]", ""));
+            dataSet.Table = FindTable(dataSet.Connection, dataSet.PathNames);
+
+            if (dataSet.Table == null && dataSet.PathNames.Count == 0 && dataSet.Connection.IsJson)
+            {
+                // The root object of the data has arrays only, the database makes no table of it.
+                dataSet.IsSingleRow = true;
+                return CreateRootSource(dataSet);
+            }
+
+            if (dataSet.Table == null)
+            {
+                Warn($"The table of the data set '{dataSet.Name}' is not found in its data by the path '{path}'.");
+                dataSet.Table = string.Join("_", dataSet.PathNames);
+            }
+
+            return CreateTableSource(dataSet);
+        }
+
+        /// <summary>
+        /// The data source of a data set that is the root object of the data. Such a data set is one row,
+        /// and a field of it may be a property of the first item of an array, "Revenue[*].Sales". The array
+        /// is a table of the database; a data transformation takes the first value of the column of this
+        /// table and so makes the row of the data set. Returns null when the data set has no such fields.
+        /// </summary>
+        private StiDataSource CreateRootSource(StiRdlxDataSet dataSet)
+        {
+            var transformation = new StiDataTransformation(dataSet.BaseName, dataSet.BaseName);
+            transformation.Alias = GetBaseAlias(dataSet);
+
+            foreach (var field in dataSet.Node.Items("Fields"))
+            {
+                var name = field.Get("Name", "");
+                var dataField = field.Get("DataField");
+                if (dataField == null || !dataSet.Columns.ContainsKey(name))
+                    continue;
+
+                var match = Regex.Match(StripFieldType(dataField),
+                    @"^([\p{L}_][\p{L}\p{N}_]*)(?:\[\*\])?(?:\.(.+)|\['(.+)'\])$");
+                if (!match.Success)
+                    continue;
+
+                var table = FindTable(dataSet.Connection, new List<string> { match.Groups[1].Value });
+                if (table == null)
+                    continue;
+
+                var key = dataSet.Connection.Name + "." + table;
+
+                StiDataSource arraySource;
+                if (!objectSources.TryGetValue(key, out arraySource))
+                {
+                    var sourceName = CreateName(dataSet.SourceName + "_" + CreateColumnName(match.Groups[1].Value));
+                    arraySource = new StiDataTableSource(key, sourceName, sourceName);
+                    report.Dictionary.DataSources.Add(arraySource);
+                    objectSources[key] = arraySource;
+                }
+
+                var property = match.Groups[2].Value + match.Groups[3].Value;
+                var type = GetFieldType(dataSet, name, GetFieldTypeHint(dataField));
+                StiDataColumn column = null;
+
+                foreach (StiDataColumn existing in arraySource.Columns)
+                {
+                    if (existing.NameInSource == property)
+                        column = existing;
+                }
+
+                if (column == null)
+                {
+                    var columnName = CreateColumnName(property, arraySource);
+                    column = new StiDataColumn(property, columnName, columnName, type);
+                    arraySource.Columns.Add(column);
+                }
+
+                transformation.Columns.Add(new StiDataTransformationColumn(dataSet.Columns[name], name, type,
+                    "First(" + arraySource.Name + "." + column.Name + ")")
+                {
+                    Mode = StiDataTransformationMode.Measure
+                });
+            }
+
+            if (transformation.Columns.Count == 0)
+                return null;
+
+            dataSet.IsSingleRow = false;
+            return transformation;
+        }
+
+        private StiDataSource CreateTableSource(StiRdlxDataSet dataSet)
+        {
+            var source = new StiDataTableSource(dataSet.Connection.Name + "." + dataSet.Table, dataSet.BaseName,
+                GetBaseAlias(dataSet));
+
+            AddDeclaredColumns(dataSet, source);
+
+            return source;
+        }
+
+        /// <summary>
+        /// The data source of a nested data set: the table the database makes of the array of the parent.
+        /// A row of this table has the key of the array it lies in, the row of the parent has the same key
+        /// in the column of the array.
+        /// </summary>
+        private void BuildNestedSource(StiRdlxDataSet dataSet)
+        {
+            var parent = dataSet.Parent;
+
+            if (parent.Connection == null)
+            {
+                // The data of the parent has no database, so the nested rows have no table either.
+                dataSet.Source = CreateEmptySource(dataSet);
+                report.Dictionary.DataSources.Add(dataSet.Source);
+                return;
+            }
+
+            dataSet.Connection = parent.Connection;
+            dataSet.PathNames = new List<string>(parent.PathNames);
+            dataSet.PathNames.AddRange(GetPathNames(dataSet.ParentField));
+            dataSet.Table = FindTable(dataSet.Connection, dataSet.PathNames);
+
+            if (dataSet.Table == null && parent.Table != null)
+                dataSet.Table = parent.Table + "_" + string.Join("_", GetPathNames(dataSet.ParentField));
+
+            if (dataSet.Table == null)
+            {
+                Warn($"The table of the data set '{dataSet.Name}' is not found in its data.");
+                dataSet.Table = string.Join("_", dataSet.PathNames);
+            }
+
+            var source = CreateTableSource(dataSet);
+            dataSet.Source = source;
+            report.Dictionary.DataSources.Add(source);
+
+            var parentSource = parent.Source as StiDataTableSource;
+            var isPlainField = dataSet.ParentField.Length > 0 && dataSet.ParentField.IndexOf('.') < 0;
+
+            if (parentSource == null || !isPlainField || !dataSet.Connection.IsJson)
+                return;
+
+            var parentColumn = GetKeyColumn(parentSource, dataSet.ParentField);
+            var keyColumn = GetKeyColumn(source, RelationColumn);
+            var relationName = CreateName(parent.BaseName + "_" + CreateColumnName(dataSet.ParentField));
+
+            report.Dictionary.Relations.Add(new StiDataRelation(relationName, relationName, relationName, parentSource,
+                source, new[] { parentColumn.Name }, new[] { keyColumn.Name }));
+
+            dataSet.ParentColumn = parentColumn.Name;
+            dataSet.KeyColumn = keyColumn.Name;
+        }
+
+        /// <summary>
+        /// The column of a data source that holds a key the JSON database gives to a nested array or object.
+        /// The key is a text.
+        /// </summary>
+        private static StiDataColumn GetKeyColumn(StiDataSource source, string nameInSource)
+        {
+            foreach (StiDataColumn column in source.Columns)
+            {
+                if (column is StiCalcDataColumn || column.NameInSource != nameInSource)
+                    continue;
+
+                column.Type = typeof(string);
+                return column;
+            }
+
+            var name = CreateColumnName(nameInSource, source);
+            var keyColumn = new StiDataColumn(nameInSource, name, name, typeof(string));
+            source.Columns.Add(keyColumn);
+
+            return keyColumn;
+        }
+
+        /// <summary>
+        /// Adds the columns of the fields declared in the data set. The type of a column is the type written
+        /// in its data field; the database gives the values this type.
         /// </summary>
         private void AddDeclaredColumns(StiRdlxDataSet dataSet, StiDataSource source)
         {
@@ -1042,9 +1153,109 @@ namespace Stimulsoft.Report.Import
                 if (dataField == null || !dataSet.Columns.ContainsKey(name))
                     continue;
 
-                source.Columns.Add(new StiDataColumn(StripFieldType(dataField), dataSet.Columns[name], name,
-                    GetHintType(GetFieldTypeHint(dataField))));
+                var path = StripFieldType(dataField).TrimStart('@');
+                var type = GetFieldType(dataSet, name, GetFieldTypeHint(dataField));
+                var column = dataSet.Columns[name];
+
+                if (IsObjectField(dataSet, path))
+                    AddObjectColumn(dataSet, source, column, name, path, type);
+
+                else
+                    source.Columns.Add(new StiDataColumn(path, column, name, type));
             }
+        }
+
+        /// <summary>
+        /// The data field is a path to a property of a nested object, "customer.name", and not a property
+        /// whose name has a dot. The JSON database makes a table of the nested objects; when the tables of
+        /// the database are known, the table of the object has to be among them.
+        /// </summary>
+        private static bool IsObjectField(StiRdlxDataSet dataSet, string path)
+        {
+            var dot = path.IndexOf('.');
+            if (dot <= 0 || dataSet.Connection == null || !dataSet.Connection.IsJson || dataSet.Table == null)
+                return false;
+
+            return dataSet.Connection.Tables == null ||
+                dataSet.Connection.Tables.Contains(dataSet.Table + "_" + path.Substring(0, dot));
+        }
+
+        /// <summary>
+        /// The type of the column of a field. It is the type the report declares: the one written in the
+        /// custom property with the types of the fields of the data set, else the one written after the name
+        /// of the data field. Only when the report declares no type, or declares a text, the use of the field
+        /// is looked at: a field the report counts with - multiplies, divides, subtracts or sums it - is
+        /// a number even when its values are written as texts.
+        /// </summary>
+        private Type GetFieldType(StiRdlxDataSet dataSet, string field, string hint)
+        {
+            Type type;
+            if (!fieldTypes.TryGetValue(GetFieldKey(dataSet.Name, field), out type))
+                type = GetHintType(hint);
+
+            if ((type == typeof(object) || type == typeof(string)) && IsCountedField(field))
+                return typeof(decimal);
+
+            return type;
+        }
+
+        /// <summary>
+        /// A field of a nested object, "customer.name". The JSON database makes a table of the objects and
+        /// writes the key of the object into the row that holds it. A data source reads this table, a relation
+        /// links it with the data source of the rows, and the field is a calculated column that reads the
+        /// column of the object through the relation.
+        /// </summary>
+        private void AddObjectColumn(StiRdlxDataSet dataSet, StiDataSource source, string column, string alias,
+            string path, Type type)
+        {
+            var parts = path.Split('.');
+            var current = source;
+            var table = dataSet.Table;
+            var reference = source.Name;
+
+            for (var index = 0; index < parts.Length - 1; index++)
+            {
+                table += "_" + parts[index];
+                var key = dataSet.Connection.Name + "." + table;
+
+                StiDataSource objectSource;
+                if (!objectSources.TryGetValue(key, out objectSource))
+                {
+                    var name = CreateName(current.Name + "_" + CreateColumnName(parts[index]));
+                    objectSource = new StiDataTableSource(key, name, name);
+                    report.Dictionary.DataSources.Add(objectSource);
+                    objectSources[key] = objectSource;
+
+                    var objectKey = GetKeyColumn(objectSource, RelationColumn);
+                    var rowKey = GetKeyColumn(current, parts[index]);
+                    var relationName = CreateName(CreateColumnName(parts[index]));
+
+                    report.Dictionary.Relations.Add(new StiDataRelation(relationName, relationName, relationName,
+                        objectSource, current, new[] { objectKey.Name }, new[] { rowKey.Name }));
+                    objectRelations[key] = relationName;
+                }
+
+                reference += "." + objectRelations[key];
+                current = objectSource;
+            }
+
+            var last = parts[parts.Length - 1];
+            StiDataColumn objectColumn = null;
+
+            foreach (StiDataColumn existing in current.Columns)
+            {
+                if (existing.NameInSource == last)
+                    objectColumn = existing;
+            }
+
+            if (objectColumn == null)
+            {
+                var name = CreateColumnName(last, current);
+                objectColumn = new StiDataColumn(last, name, name, type);
+                current.Columns.Add(objectColumn);
+            }
+
+            source.Columns.Add(new StiCalcDataColumn(column, alias, type, reference + "." + objectColumn.Name));
         }
 
         private string AddDatabase(StiSqlDatabase database, StiRdlxNode sourceNode, string connectString)
@@ -1065,83 +1276,16 @@ namespace Stimulsoft.Report.Import
             return name;
         }
 
-        /// <summary>
-        /// The data is on a server or in a file that is not found: the data set reads a JSON database
-        /// by the address, the table is the one the path of the query points to.
-        /// </summary>
-        private StiDataSource CreateRemoteSource(StiRdlxDataSet dataSet, string connectString, string commandText)
-        {
-            var address = "";
-            var separator = connectString.IndexOf('=');
-            var kind = separator < 0 ? "" : connectString.Substring(0, separator).Trim().ToLowerInvariant();
-
-            if (kind == "jsondoc" || kind == "endpoint" || kind == "csvdoc")
-                address = connectString.Substring(separator + 1).Split(';')[0].Trim();
-
-            if (commandText.StartsWith("=") || connectString.StartsWith("="))
-            {
-                Warn($"The query of the data set '{dataSet.Name}' is an expression, the address of its data " +
-                    "is not known.");
-            }
-
-            var command = ParsePairs(commandText.StartsWith("=") ? "" : commandText, "jpath");
-            address += GetPair(command, "uri");
-
-            if (address.Length == 0)
-            {
-                Warn($"The data of the data set '{dataSet.Name}' is not found, the data source is added " +
-                    "without a connection.");
-                return new StiDataTableSource(dataSet.SourceName, dataSet.SourceName, dataSet.Name);
-            }
-
-            string databaseName;
-            if (!remoteDatabases.TryGetValue(address, out databaseName))
-            {
-                databaseName = CreateName(dataSet.Name + "Data");
-                remoteDatabases[address] = databaseName;
-                report.Dictionary.Databases.Add(new StiJsonDatabase(databaseName, address));
-            }
-
-            if (!IsUrl(address))
-                Warn($"The data file '{address}' of the data set '{dataSet.Name}' is not found beside the report.");
-
-            var table = GetTableName(GetPair(command, "jpath"));
-            return new StiDataTableSource(databaseName + "." + table, dataSet.SourceName, dataSet.Name);
-        }
-
-        private static List<string> GetPathNames(string path)
-        {
-            var names = new List<string>();
-
-            foreach (Match match in Regex.Matches(path ?? "", @"[A-Za-z_][A-Za-z0-9_]*"))
-            {
-                names.Add(match.Value);
-            }
-
-            return names;
-        }
-
-        /// <summary>
-        /// The name of the table that the JSON database of Stimulsoft makes of the array the path points to.
-        /// </summary>
-        private static string GetTableName(string path)
-        {
-            var names = GetPathNames(path);
-            if (names.Count == 0)
-                return "root";
-
-            // An answer of OData is an object with the rows in "value" and with plain properties beside it.
-            // For such an object the JSON database makes the table "root" of the properties and names the
-            // tables of its arrays with this prefix.
-            return names[0] == "value" ? "root_" + string.Join("_", names) : string.Join("_", names);
-        }
-
         private static Type GetHintType(string hint)
         {
             switch (hint)
             {
                 case "number":
+                case "float":
                     return typeof(decimal);
+
+                case "integer":
+                    return typeof(long);
 
                 case "boolean":
                     return typeof(bool);
@@ -1155,199 +1299,6 @@ namespace Stimulsoft.Report.Import
 
                 default:
                     return typeof(object);
-            }
-        }
-
-        /// <summary>
-        /// Writes the rows of a data set into the JSON resource of the report and adds a data source of it.
-        /// </summary>
-        private void BuildEmbeddedSource(StiRdlxDataSet dataSet)
-        {
-            var dataFields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var field in dataSet.Node.Items("Fields"))
-            {
-                var name = field.Get("Name", "");
-                var dataField = field.Get("DataField");
-
-                if (dataField != null && dataSet.Columns.ContainsKey(name))
-                    dataFields[name] = dataField;
-            }
-
-            if (dataFields.Count == 0 && dataSet.Rows.Count > 0)
-            {
-                var used = new HashSet<string>(dataSet.Columns.Values, StringComparer.OrdinalIgnoreCase);
-
-                foreach (var property in dataSet.Rows[0].Properties())
-                {
-                    if (!(property.Value is JValue) || dataSet.Columns.ContainsKey(property.Name))
-                        continue;
-
-                    dataSet.Columns[property.Name] = CreateColumnName(property.Name, used);
-                    dataFields[property.Name] = property.Name;
-                }
-            }
-
-            var hasChildren = false;
-
-            foreach (var other in dataSetList)
-            {
-                if (other.Parent == dataSet)
-                    hasChildren = true;
-            }
-
-            List<int> parents;
-            parentRows.TryGetValue(dataSet.Name, out parents);
-
-            var table = new JArray();
-            var types = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
-
-            for (var index = 0; index < dataSet.Rows.Count; index++)
-            {
-                var row = new JObject();
-
-                foreach (var pair in dataFields)
-                {
-                    var value = SelectField(dataSet.Rows[index], pair.Value) as JValue;
-                    if (value == null || value.Type == JTokenType.Null)
-                        continue;
-
-                    row[dataSet.Columns[pair.Key]] = value.DeepClone();
-                    MergeType(types, pair.Key, value);
-                }
-
-                if (hasChildren)
-                    row[KeyColumn] = index;
-
-                if (parents != null)
-                    row[ParentKeyColumn] = parents[index];
-
-                table.Add(row);
-            }
-
-            NormalizeNumbers(table, dataSet, dataFields, types);
-            NormalizeDates(table, dataSet, dataFields, types);
-            embeddedData[dataSet.SourceName] = table;
-
-            var source = new StiDataTableSource(EmbeddedDataName + "." + dataSet.SourceName, dataSet.SourceName,
-                dataSet.Name);
-
-            foreach (var pair in dataFields)
-            {
-                Type type;
-                if (!types.TryGetValue(pair.Key, out type))
-                    type = GetHintType(GetFieldTypeHint(pair.Value));
-
-                if (type == typeof(object))
-                    type = typeof(string);
-
-                var column = dataSet.Columns[pair.Key];
-                source.Columns.Add(new StiDataColumn(column, column, pair.Key, type));
-            }
-
-            if (hasChildren)
-                source.Columns.Add(new StiDataColumn(KeyColumn, KeyColumn, KeyColumn, typeof(long)));
-
-            if (parents != null)
-                source.Columns.Add(new StiDataColumn(ParentKeyColumn, ParentKeyColumn, ParentKeyColumn, typeof(long)));
-
-            dataSet.Source = source;
-            report.Dictionary.DataSources.Add(source);
-        }
-
-        /// <summary>
-        /// Keeps the type of a column that fits all its values.
-        /// </summary>
-        private static void MergeType(Dictionary<string, Type> types, string field, JValue value)
-        {
-            Type type;
-
-            switch (value.Type)
-            {
-                case JTokenType.Integer:
-                    type = typeof(long);
-                    break;
-
-                case JTokenType.Float:
-                    type = typeof(decimal);
-                    break;
-
-                case JTokenType.Boolean:
-                    type = typeof(bool);
-                    break;
-
-                case JTokenType.Date:
-                    type = typeof(DateTime);
-                    break;
-
-                default:
-                    type = typeof(string);
-                    break;
-            }
-
-            Type current;
-            if (!types.TryGetValue(field, out current) || current == type)
-            {
-                types[field] = type;
-                return;
-            }
-
-            var isNumber = (current == typeof(long) || current == typeof(decimal)) &&
-                (type == typeof(long) || type == typeof(decimal));
-
-            types[field] = isNumber ? typeof(decimal) : typeof(string);
-        }
-
-        /// <summary>
-        /// A text column whose values are all numbers becomes a number column when the report counts with
-        /// it: multiplies, divides, subtracts or sums it. A column of codes that only look like numbers, and
-        /// that the report compares with texts, stays a text column.
-        /// </summary>
-        private void NormalizeNumbers(JArray table, StiRdlxDataSet dataSet, Dictionary<string, string> dataFields,
-            Dictionary<string, Type> types)
-        {
-            foreach (var field in dataFields.Keys)
-            {
-                Type type;
-                if (!types.TryGetValue(field, out type) || type != typeof(string) || !IsCountedField(field))
-                    continue;
-
-                var column = dataSet.Columns[field];
-                var numbers = new List<KeyValuePair<JObject, decimal>>();
-                var isNumber = true;
-                var isInteger = true;
-
-                foreach (JObject row in table)
-                {
-                    var value = row[column];
-                    if (value == null)
-                        continue;
-
-                    var text = value.ToString().Trim();
-                    decimal number;
-
-                    if (!Regex.IsMatch(text, @"^-?\d+(\.\d+)?$") || !decimal.TryParse(text, NumberStyles.Number,
-                        CultureInfo.InvariantCulture, out number))
-                    {
-                        isNumber = false;
-                        break;
-                    }
-
-                    if (text.Contains("."))
-                        isInteger = false;
-
-                    numbers.Add(new KeyValuePair<JObject, decimal>(row, number));
-                }
-
-                if (!isNumber || numbers.Count == 0)
-                    continue;
-
-                foreach (var pair in numbers)
-                {
-                    pair.Key[column] = isInteger ? new JValue((long)pair.Value) : new JValue(pair.Value);
-                }
-
-                types[field] = isInteger ? typeof(long) : typeof(decimal);
             }
         }
 
@@ -1370,69 +1321,7 @@ namespace Stimulsoft.Report.Import
         }
 
         /// <summary>
-        /// A text column whose values are all dates becomes a date column. The dates are rewritten in the
-        /// full ISO form: the JSON database of Stimulsoft takes only such a text as a date.
-        /// </summary>
-        private static void NormalizeDates(JArray table, StiRdlxDataSet dataSet, Dictionary<string, string> dataFields,
-            Dictionary<string, Type> types)
-        {
-            foreach (var field in dataFields.Keys)
-            {
-                Type type;
-                if (!types.TryGetValue(field, out type) || type != typeof(string))
-                    continue;
-
-                var column = dataSet.Columns[field];
-                var dates = new List<KeyValuePair<JObject, DateTime>>();
-                var isDate = true;
-
-                foreach (JObject row in table)
-                {
-                    var value = row[column];
-                    if (value == null)
-                        continue;
-
-                    DateTime date;
-                    if (!TryParseDate(value.ToString(), out date))
-                    {
-                        isDate = false;
-                        break;
-                    }
-
-                    dates.Add(new KeyValuePair<JObject, DateTime>(row, date));
-                }
-
-                if (!isDate || dates.Count == 0)
-                    continue;
-
-                foreach (var pair in dates)
-                {
-                    pair.Key[column] = pair.Value.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
-                }
-
-                types[field] = typeof(DateTime);
-            }
-        }
-
-        /// <summary>
-        /// Parses a date written as ISO (2020-01-31, 2020-01-31T10:00:00) or as month/day/year.
-        /// </summary>
-        private static bool TryParseDate(string text, out DateTime date)
-        {
-            date = DateTime.MinValue;
-            text = text.Trim();
-
-            var isIso = Regex.IsMatch(text, @"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}.*)?$");
-            var isUs = Regex.IsMatch(text, @"^\d{1,2}/\d{1,2}/\d{4}(\s+\d{1,2}:\d{2}(:\d{2})?(\s*[AaPp][Mm])?)?$");
-
-            if (!isIso && !isUs)
-                return false;
-
-            return DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
-        }
-
-        /// <summary>
-        /// A field with an expression becomes a calculated column.
+        /// A field with an expression becomes a calculated column of the data source of the table.
         /// </summary>
         private void AddCalculatedColumns(StiRdlxDataSet dataSet)
         {
@@ -1440,19 +1329,85 @@ namespace Stimulsoft.Report.Import
                 return;
 
             var scope = new StiRdlxScope { DataSet = dataSet, IsRegion = true };
+            var sourceName = dataSet.SourceName;
 
-            foreach (var field in dataSet.Node.Items("Fields"))
+            // The expression of the column reads the data source of the table, not the filtered one.
+            dataSet.SourceName = dataSet.BaseName;
+
+            try
             {
-                var name = field.Get("Name", "");
-                var value = field.Get("Value");
+                foreach (var field in dataSet.Node.Items("Fields"))
+                {
+                    var name = field.Get("Name", "");
+                    var value = field.Get("Value");
 
-                if (string.IsNullOrEmpty(value) || field.Has("DataField") || !dataSet.Columns.ContainsKey(name))
-                    continue;
+                    if (string.IsNullOrEmpty(value) || field.Has("DataField") || !dataSet.Columns.ContainsKey(name))
+                        continue;
 
-                var column = dataSet.Columns[name];
-                dataSet.Source.Columns.Add(new StiCalcDataColumn(column, name, typeof(object),
-                    ConvertToExpression(value, scope)));
+                    var column = dataSet.Columns[name];
+                    dataSet.Source.Columns.Add(new StiCalcDataColumn(column, name, typeof(object),
+                        ConvertToExpression(value, scope)));
+                }
             }
+            finally
+            {
+                dataSet.SourceName = sourceName;
+            }
+        }
+
+        /// <summary>
+        /// Applies the filters of a data set to all its rows, as ActiveReports does. A data source of
+        /// Stimulsoft has no filters, so a virtual source with the name of the data set filters the rows of
+        /// the data source of the table: every band, chart and total of the report keeps the name of the data
+        /// set and sees the filtered rows. A calculated column stays in the data source of the table, the
+        /// virtual source takes its value as a plain column.
+        /// </summary>
+        private void AddFilteredSource(StiRdlxDataSet dataSet)
+        {
+            var filters = dataSet.Node.Items("Filters");
+            if (filters.Count == 0 || dataSet.Source == null || dataSet.BaseName == dataSet.SourceName)
+                return;
+
+            var source = new StiVirtualSource(dataSet.BaseName, dataSet.SourceName);
+            source.Alias = dataSet.Name;
+            var results = new List<string>();
+
+            foreach (StiDataColumn column in dataSet.Source.Columns)
+            {
+                source.Columns.Add(new StiDataColumn(column.Name, column.Name, column.Alias, column.Type));
+                results.Add(column.Name);
+                results.Add(string.Empty);
+                results.Add(column.Name);
+            }
+
+            source.Results = results.ToArray();
+
+            var scope = new StiRdlxScope { DataSet = dataSet, IsRegion = true };
+            var sourceName = dataSet.SourceName;
+
+            // The filters read the data source of the table.
+            dataSet.SourceName = dataSet.BaseName;
+
+            try
+            {
+                foreach (var filter in filters)
+                {
+                    var expression = ConvertFilter(filter, scope);
+                    if (expression == null)
+                        continue;
+
+                    source.Filters.Add(new StiFilter("{" + expression + "}"));
+                    source.FilterOn = true;
+                }
+            }
+            finally
+            {
+                dataSet.SourceName = sourceName;
+            }
+
+            dataSet.Source = source;
+            dataSet.IsFiltered = true;
+            report.Dictionary.DataSources.Add(source);
         }
         #endregion
     }

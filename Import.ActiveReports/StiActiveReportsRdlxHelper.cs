@@ -32,6 +32,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Xml;
 using Stimulsoft.Base;
@@ -119,7 +120,8 @@ namespace Stimulsoft.Report.Import
                 report.ReportAlias = reportName;
             }
 
-            // The formats of numbers and dates follow the language of the report.
+            // The formats of numbers and dates follow the language of the report. The culture of a report that
+            // names no language is not set.
             var language = root.Get("Language");
             if (!string.IsNullOrEmpty(language) && !language.StartsWith("="))
                 report.Culture = language;
@@ -149,9 +151,9 @@ namespace Stimulsoft.Report.Import
             if (report.Pages.Count == 0)
                 report.Pages.Add(new StiPage(report));
 
-            AddEmbeddedData();
             ResolveBandMarkers();
             ArrangeBands();
+            ResolveChartScopes();
         }
 
         /// <summary>

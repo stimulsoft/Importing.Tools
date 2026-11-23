@@ -32,7 +32,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Stimulsoft.Base.Drawing;
-using Stimulsoft.Base.Json.Linq;
 using Stimulsoft.Report.Chart;
 using Stimulsoft.Report.Components;
 using Stimulsoft.Report.Dictionary;
@@ -44,9 +43,9 @@ namespace Stimulsoft.Report.Import
     /// CategoryGroupings and SeriesGroupings, and the older one (dvchart), where a plot has Encodings with
     /// Values, Category and Details. Both give a chart with a series per value of the plot.
     /// A chart of ActiveReports groups the rows by the category and shows a total of each group, a chart of
-    /// Stimulsoft shows a point per row. So when the data of the chart is known at the import, the totals
-    /// are counted here and written into a table of the report data, the chart reads this table. Otherwise
-    /// a data transformation counts them when the report is built.
+    /// Stimulsoft shows a point per row. So the chart reads a data transformation that groups the rows of
+    /// the data source by the category and the series and counts the totals when the report is built.
+    /// The filters of the chart are the filters of a virtual source the transformation reads.
     /// </summary>
     public partial class StiActiveReportsRdlxHelper
     {
@@ -54,6 +53,11 @@ namespace Stimulsoft.Report.Import
         private const string ChartCategoryColumn = "Category";
         private const string ChartSeriesColumn = "Series";
         private const string ChartValueColumn = "Value";
+        private const string ChartKeyColumn = "Key";
+        #endregion
+
+        #region Fields.Chart
+        private Dictionary<StiChart, StiRdlxChartData> chartData = new Dictionary<StiChart, StiRdlxChartData>();
         #endregion
 
         #region Methods.Chart
@@ -78,10 +82,9 @@ namespace Stimulsoft.Report.Import
                     chart.FilterOn = true;
                 }
 
-                columns = CreateChartTable(chart, node, dataSet, chartScope) ??
-                    CreateChartTransformation(chart, node, dataSet, chartScope);
+                columns = CreateChartTransformation(chart, node, dataSet, chartScope);
 
-                // The table of the chart is counted of the filtered rows, the chart needs no filters.
+                // The transformation counts the filtered rows, the chart needs no filters.
                 if (columns != null)
                 {
                     chart.Filters.Clear();
@@ -109,8 +112,8 @@ namespace Stimulsoft.Report.Import
             }
             else if (columns == null && dataSet != null)
             {
-                Warn($"The values of the chart '{node.Get("Name")}' are not grouped by the category: the chart " +
-                    "is filtered, its plots have different categories or its expressions are too complex.");
+                Warn($"The values of the chart '{node.Get("Name")}' are not grouped by the category: its plots " +
+                    "have different categories or its expressions are too complex.");
             }
 
             var header = node.Child("Header");
@@ -195,6 +198,9 @@ namespace Stimulsoft.Report.Import
                         isValue: false);
                 }
 
+                if (series is StiPieSeries && !string.IsNullOrEmpty(category))
+                    SetLegendArguments(chart, series, plot, value.Value);
+
                 AddSeries(chart, series, value.Name, key);
             }
         }
@@ -206,6 +212,28 @@ namespace Stimulsoft.Report.Import
         {
             string column;
             return columns != null && columns.TryGetValue(expression, out column) ? column : expression;
+        }
+
+        /// <summary>
+        /// The legend of a pie names its slices: an item of the legend shows the category of the slice, and
+        /// the value too when the text of the legend of the plot has the value in it.
+        /// </summary>
+        private static void SetLegendArguments(StiChart chart, StiSeries series, StiRdlxNode plot, string value)
+        {
+            var color = plot.Child("ColorSeries");
+            var text = color == null ? "" : color.Get("Field", "");
+            var field = Regex.Match(value ?? "", @"Fields!\w+\.Value|^\{\w+\}$").Value;
+            var hasValue = field.Length > 0 && text.IndexOf(field, StringComparison.OrdinalIgnoreCase) >= 0;
+            var type = hasValue ? StiSeriesLabelsValueType.ArgumentValue : StiSeriesLabelsValueType.Argument;
+
+            foreach (var labels in new[] { chart.SeriesLabels, series.SeriesLabels })
+            {
+                if (labels == null)
+                    continue;
+
+                labels.LegendValueType = type;
+                labels.ValueTypeSeparator = " ";
+            }
         }
 
         private void AddSeries(StiChart chart, StiSeries series, string name, string key)
@@ -223,134 +251,6 @@ namespace Stimulsoft.Report.Import
                 chart.Area = (IStiArea)Activator.CreateInstance(series.GetDefaultAreaType());
 
             chart.Series.Add(series);
-        }
-
-        /// <summary>
-        /// Counts the totals of the values of a chart by its categories and series and writes them into
-        /// a table of the report data. Returns the columns of this table by the expressions they hold, null
-        /// when the totals can not be counted: the rows are not known, the chart is filtered, its plots have
-        /// different categories or an expression is not a plain field.
-        /// </summary>
-        private Dictionary<string, string> CreateChartTable(StiChart chart, StiRdlxNode node, StiRdlxDataSet dataSet,
-            StiRdlxScope scope)
-        {
-            var table = embeddedData[dataSet.SourceName] as JArray;
-            var filters = node.Items("Filters");
-
-            if (table == null || dataSet.Node.Items("Filters").Count > 0 && !dataSet.IsFiltered ||
-                filters.Count > 0 && !AreStaticFilters(filters, dataSet))
-                return null;
-
-            var tableRows = new List<JObject>();
-
-            foreach (JObject row in table)
-            {
-                tableRows.Add(row);
-            }
-
-            var rows = FilterRows(tableRows, filters, dataSet, isTable: true);
-
-            string category;
-            string seriesKey;
-            var values = new List<string>();
-
-            if (!CollectChartExpressions(node, scope, out category, out seriesKey, values))
-                return null;
-
-            var prefix = dataSet.SourceName + ".";
-            var functions = new string[values.Count];
-            var valueColumns = new string[values.Count];
-
-            for (var index = 0; index < values.Count; index++)
-            {
-                var match = Regex.Match(values[index], @"^(?:(Sum|Avg|Count|Min|Max)\()?(\w+\.\w+)\)?$");
-                if (!match.Success || !match.Groups[2].Value.StartsWith(prefix))
-                    return null;
-
-                functions[index] = match.Groups[1].Success ? match.Groups[1].Value : "Sum";
-                valueColumns[index] = match.Groups[2].Value.Substring(prefix.Length);
-            }
-
-            if (category == null || values.Count == 0 || !IsColumn(category) || !category.StartsWith(prefix) ||
-                seriesKey.Length > 0 && (!IsColumn(seriesKey) || !seriesKey.StartsWith(prefix)))
-                return null;
-
-            var categoryColumn = category.Substring(prefix.Length);
-            var seriesColumn = seriesKey.Length > 0 ? seriesKey.Substring(prefix.Length) : null;
-            var groups = new Dictionary<string, JObject>(StringComparer.Ordinal);
-            var totals = new Dictionary<string, double[]>(StringComparer.Ordinal);
-            var counts = new Dictionary<string, int[]>(StringComparer.Ordinal);
-            var chartTable = new JArray();
-
-            foreach (var row in rows)
-            {
-                var key = row[categoryColumn] + "|#|" + (seriesColumn == null ? null : row[seriesColumn]);
-
-                if (!groups.ContainsKey(key))
-                {
-                    var group = new JObject();
-                    group[ChartCategoryColumn] = row[categoryColumn] == null ? null : row[categoryColumn].DeepClone();
-
-                    if (seriesColumn != null)
-                        group[ChartSeriesColumn] = row[seriesColumn] == null ? null : row[seriesColumn].DeepClone();
-
-                    groups[key] = group;
-                    totals[key] = new double[values.Count];
-                    counts[key] = new int[values.Count];
-                    chartTable.Add(group);
-                }
-
-                for (var index = 0; index < values.Count; index++)
-                {
-                    AddChartValue(row[valueColumns[index]], functions[index], totals[key], counts[key], index);
-                }
-            }
-
-            foreach (var pair in groups)
-            {
-                for (var index = 0; index < values.Count; index++)
-                {
-                    var count = counts[pair.Key][index];
-                    var total = totals[pair.Key][index];
-
-                    if (functions[index] == "Count")
-                        total = count;
-
-                    else if (functions[index] == "Avg" && count > 0)
-                        total /= count;
-
-                    pair.Value[ChartValueColumn + (index + 1)] = total;
-                }
-            }
-
-            var name = CreateName(node.Get("Name", "Chart") + "Data");
-            embeddedData[name] = chartTable;
-
-            var source = new StiDataTableSource(EmbeddedDataName + "." + name, name, name);
-            var columns = new Dictionary<string, string>(StringComparer.Ordinal);
-
-            source.Columns.Add(new StiDataColumn(ChartCategoryColumn, ChartCategoryColumn, ChartCategoryColumn,
-                GetColumnType(dataSet, categoryColumn)));
-            columns[category] = name + "." + ChartCategoryColumn;
-
-            if (seriesColumn != null)
-            {
-                source.Columns.Add(new StiDataColumn(ChartSeriesColumn, ChartSeriesColumn, ChartSeriesColumn,
-                    GetColumnType(dataSet, seriesColumn)));
-                columns[seriesKey] = name + "." + ChartSeriesColumn;
-            }
-
-            for (var index = 0; index < values.Count; index++)
-            {
-                var column = ChartValueColumn + (index + 1);
-                source.Columns.Add(new StiDataColumn(column, column, column, typeof(decimal)));
-                columns[values[index]] = name + "." + column;
-            }
-
-            report.Dictionary.DataSources.Add(source);
-            chart.DataSourceName = name;
-
-            return columns;
         }
 
         /// <summary>
@@ -400,17 +300,14 @@ namespace Stimulsoft.Report.Import
         }
 
         /// <summary>
-        /// The totals of a chart whose rows are not known at the import, or whose expressions are not plain
-        /// fields, are counted when the report is built: a data transformation groups the rows of the data
-        /// source by the category and the series and counts the values. Returns the columns of the
-        /// transformation by the expressions they hold, null when it can not be made.
+        /// The totals of a chart are counted when the report is built: a data transformation groups the rows
+        /// of the data source by the category and the series and counts the values. Returns the columns of
+        /// the transformation by the expressions they hold, null when it can not be made.
         /// </summary>
         private Dictionary<string, string> CreateChartTransformation(StiChart chart, StiRdlxNode node,
             StiRdlxDataSet dataSet, StiRdlxScope scope)
         {
-            // The filters of the chart and of the data set are not applied to the rows of a transformation.
-            if (dataSet.Source == null || node.Items("Filters").Count > 0 ||
-                dataSet.Node.Items("Filters").Count > 0 && !dataSet.IsFiltered)
+            if (dataSet.Source == null)
                 return null;
 
             string category;
@@ -440,6 +337,22 @@ namespace Stimulsoft.Report.Import
                 measures.Add(hasTotal ? measure : "Sum(" + measure + ")");
             }
 
+            // The filters of the chart are applied by a virtual source, the transformation reads its rows.
+            var rowsName = CreateChartRows(node, dataSet, scope);
+
+            if (rowsName != null)
+            {
+                var pattern = @"\b" + Regex.Escape(prefix);
+
+                categoryExpression = Regex.Replace(categoryExpression, pattern, rowsName + ".");
+                seriesExpression = Regex.Replace(seriesExpression, pattern, rowsName + ".");
+
+                for (var index = 0; index < measures.Count; index++)
+                {
+                    measures[index] = Regex.Replace(measures[index], pattern, rowsName + ".");
+                }
+            }
+
             var name = CreateName(node.Get("Name", "Chart") + "Data");
             var transformation = new StiDataTransformation(name, name);
             var columns = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -465,8 +378,191 @@ namespace Stimulsoft.Report.Import
 
             report.Dictionary.DataSources.Add(transformation);
             chart.DataSourceName = name;
+            chartData[chart] = new StiRdlxChartData(transformation, rowsName ?? dataSet.SourceName, dataSet);
 
             return columns;
+        }
+
+        /// <summary>
+        /// Gives the charts that stand in a group the rows of the group. A chart of ActiveReports placed in
+        /// a group of a data region counts the rows of the current group only; a data transformation counts
+        /// all the rows of its data source. So the key of the group becomes one more dimension of the
+        /// transformation, and the chart takes the rows with the key of the current row of the data set,
+        /// which stands on the first row of the group when the band of the group is printed. It is called
+        /// when all the bands stand on their places.
+        /// </summary>
+        private void ResolveChartScopes()
+        {
+            foreach (var pair in chartData)
+            {
+                var chart = pair.Key;
+                var data = pair.Value;
+                var keys = new List<string>();
+
+                for (var parent = chart.Parent; parent != null; parent = parent.Parent)
+                {
+                    var band = parent as StiBand;
+                    if (band != null)
+                        CollectGroupKeys(chart, band, data.DataSet, keys);
+                }
+
+                var columns = new List<string>();
+
+                // A key is the column of the data source the group reads: the data set or its copy that
+                // shows the rows of an outer group. The nearest group of a column is taken.
+                foreach (var key in keys)
+                {
+                    var keyColumn = key.Substring(key.IndexOf('.') + 1);
+                    if (columns.Contains(keyColumn))
+                        continue;
+
+                    columns.Add(keyColumn);
+                    var column = ChartKeyColumn + columns.Count;
+
+                    data.Transformation.Columns.Add(new StiDataTransformationColumn(column, column,
+                        GetColumnType(data.DataSet, keyColumn), data.RowsName + "." + keyColumn)
+                    {
+                        Mode = StiDataTransformationMode.Dimension
+                    });
+
+                    chart.Filters.Add(new StiFilter("{" + data.Transformation.Name + "." + column + " == " + key + "}"));
+                    chart.FilterOn = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Adds the columns of the conditions of the groups a band is printed in: of the group of the band
+        /// itself and of the groups above it. A data band is printed in all the groups that stand before it.
+        /// </summary>
+        private void CollectGroupKeys(StiChart chart, StiBand band, StiRdlxDataSet dataSet, List<string> keys)
+        {
+            var isGroupBand = band is StiGroupHeaderBand || band is StiGroupFooterBand || band is StiDataBand;
+            if (band.Parent == null || !isGroupBand)
+                return;
+
+            var bands = new List<StiBand>();
+
+            foreach (StiComponent component in band.Parent.Components)
+            {
+                if (component is StiBand)
+                    bands.Add((StiBand)component);
+            }
+
+            bands.Sort(CompareBandTops);
+
+            // The headers of the groups stand one after another before the data band, the outer group first;
+            // the footers stand after it in the reverse order.
+            var position = bands.IndexOf(band);
+            var footers = 0;
+
+            while (position >= 0 && bands[position] is StiGroupFooterBand)
+            {
+                footers++;
+                position--;
+            }
+
+            if (footers > 0 && position >= 0 && bands[position] is StiDataBand)
+                position--;
+
+            else if (footers == 0 && band is StiDataBand)
+                position--;
+
+            var headers = new List<StiGroupHeaderBand>();
+
+            while (position >= 0 && bands[position] is StiGroupHeaderBand)
+            {
+                headers.Insert(0, (StiGroupHeaderBand)bands[position]);
+                position--;
+            }
+
+            // The first footer after the data band closes the last header.
+            var count = footers > 0 ? headers.Count - footers + 1 : headers.Count;
+
+            for (var index = 0; index < count && index < headers.Count; index++)
+            {
+                var condition = headers[index].Condition.Value ?? "";
+                var match = Regex.Match(condition, @"^\{(\w+)\.(\w+)\}$");
+
+                // A group without an expression holds all the rows, it has no key.
+                if (condition == "{\"\"}")
+                    continue;
+
+                if (!match.Success || !IsSourceOfDataSet(match.Groups[1].Value, dataSet))
+                {
+                    Warn($"The chart '{chart.Name}' stands in a group whose condition is not a field of its data " +
+                        "set, it shows the rows of all the groups.");
+                    continue;
+                }
+
+                var key = match.Groups[1].Value + "." + match.Groups[2].Value;
+                if (!keys.Contains(key))
+                    keys.Add(key);
+            }
+        }
+
+        /// <summary>
+        /// The data source is the one of the data set or of its copy that shows the rows of a group.
+        /// </summary>
+        private bool IsSourceOfDataSet(string sourceName, StiRdlxDataSet dataSet)
+        {
+            if (sourceName == dataSet.SourceName)
+                return true;
+
+            foreach (var copy in groupRowSets)
+            {
+                if (copy.SourceName == sourceName && copy.Original == (dataSet.Original ?? dataSet))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static int CompareBandTops(StiBand first, StiBand second)
+        {
+            return first.Top.CompareTo(second.Top);
+        }
+
+        /// <summary>
+        /// Makes a virtual source that leaves the rows passing the filters of a chart. Returns its name,
+        /// null when the chart has no filters.
+        /// </summary>
+        private string CreateChartRows(StiRdlxNode node, StiRdlxDataSet dataSet, StiRdlxScope scope)
+        {
+            var filters = new List<string>();
+
+            foreach (var filter in node.Items("Filters"))
+            {
+                var expression = ConvertFilter(filter, scope);
+                if (expression != null)
+                    filters.Add(expression);
+            }
+
+            if (filters.Count == 0)
+                return null;
+
+            var name = CreateName(node.Get("Name", "Chart") + "Rows");
+            var source = new StiVirtualSource(dataSet.SourceName, name);
+            var results = new List<string>();
+
+            foreach (StiDataColumn column in dataSet.Source.Columns)
+            {
+                source.Columns.Add(new StiDataColumn(column.Name, column.Name, column.Alias, column.Type));
+                results.Add(column.Name);
+                results.Add(string.Empty);
+                results.Add(column.Name);
+            }
+
+            foreach (var filter in filters)
+            {
+                source.Filters.Add(new StiFilter("{" + filter + "}"));
+            }
+
+            source.Results = results.ToArray();
+            source.FilterOn = true;
+            report.Dictionary.DataSources.Add(source);
+
+            return name;
         }
 
         private static void AddTransformationColumn(StiDataTransformation transformation, string name,
@@ -499,42 +595,6 @@ namespace Stimulsoft.Report.Import
             rest = Regex.Replace(columns, @"\b(Sum|Avg|Count|Min|Max|Year|Month|Day|MonthName|Round|Abs)\(", "(");
 
             return Regex.IsMatch(rest, @"^[\d\s.+\-*/(),]*$") ? result : null;
-        }
-
-        /// <summary>
-        /// Adds a value of a row to the total of its group.
-        /// </summary>
-        private static void AddChartValue(JToken token, string function, double[] totals, int[] counts, int index)
-        {
-            if (token == null || token.Type == JTokenType.Null)
-                return;
-
-            var number = 0d;
-
-            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
-                number = token.Value<double>();
-
-            else if (!double.TryParse(token.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number) &&
-                function != "Count")
-                return;
-
-            var isFirst = counts[index] == 0;
-            counts[index]++;
-
-            switch (function)
-            {
-                case "Min":
-                    totals[index] = isFirst ? number : Math.Min(totals[index], number);
-                    break;
-
-                case "Max":
-                    totals[index] = isFirst ? number : Math.Max(totals[index], number);
-                    break;
-
-                default:
-                    totals[index] += number;
-                    break;
-            }
         }
 
         private static Type GetColumnType(StiRdlxDataSet dataSet, string column)
