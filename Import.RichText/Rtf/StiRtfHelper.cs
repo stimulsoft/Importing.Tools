@@ -64,6 +64,19 @@ namespace Stimulsoft.Report.Import
 		private const double MinTextWidth = 50;
 		private const float MinLineSpacing = 0.5f;
 		private const float MaxLineSpacing = 5f;
+		private const int ScriptNone = 0;
+		private const int ScriptSuper = 1;
+		private const int ScriptSub = 2;
+		//a tab stop which is closer to the start of the text than this is not a stop
+		private const double MinTabStop = 2;
+		//the tab stops of Word after the last own one: every half of an inch
+		private const double DefaultTabDistance = 50;
+		//a cell keeps at least this width for its text, a wider padding is dropped
+		private const double MinCellTextWidth = 5;
+		//the width which a word needs over its measured one to stay on one line
+		private const double WordWidthReserve = 2;
+		//the colors of the document for the keywords of the text
+		private ArrayList documentColors;
 		private static Hashtable fontNames;
 
         private const int codePagesTableSize = 14;
@@ -157,7 +170,28 @@ namespace Stimulsoft.Report.Import
 			public int SpaceAfter;
 			public int LineHeight;
 			public bool LineHeightIsMultiple;
+			//the left tab stops of the paragraph in twips, null when it has none
+			public int[] TabStops;
+			//the next tab stop is a right, a centered or a decimal one: a text component can't have it
+			public bool IsOtherTabStop;
+			//the index of the color behind the characters, 0 for none
+			public int BackColor;
+			//the characters are raised or lowered: StiRtfScript
+			public int Script;
 			}
+
+		//The sides of the padding of a cell in the order of their arrays.
+		private const int PaddingLeft = 0;
+		private const int PaddingRight = 1;
+		private const int PaddingTop = 2;
+		private const int PaddingBottom = 3;
+
+		//The padding of a cell or of all the cells of a row. A side has a value only with its unit keyword.
+		private class StiRtfPadding
+		{
+			public int[] Values = new int[4];
+			public bool[] InTwips = new bool[4];
+		}
 
 		private class StiRtfFormatCount
 		{
@@ -753,6 +787,35 @@ namespace Stimulsoft.Report.Import
 					state.Hidden = !node.HasParameter || node.Parameter != 0;
 					break;
 
+				case "highlight":
+				case "cb":
+				case "chcbpat":
+					state.BackColor = GetBackColorIndex(node.Parameter);
+					break;
+
+				case "super":
+					state.Script = node.HasParameter && node.Parameter == 0 ? ScriptNone : ScriptSuper;
+					break;
+				case "sub":
+					state.Script = node.HasParameter && node.Parameter == 0 ? ScriptNone : ScriptSub;
+					break;
+				case "nosupersub":
+					state.Script = ScriptNone;
+					break;
+
+				case "tqr":
+				case "tqc":
+				case "tqdec":
+					state.IsOtherTabStop = true;
+					break;
+				case "tb":
+					state.IsOtherTabStop = false;
+					break;
+				case "tx":
+					if (!state.IsOtherTabStop) state.TabStops = AddTabStop(state.TabStops, node.Parameter);
+					state.IsOtherTabStop = false;
+					break;
+
 				case "pard":
 					state.Alignment = StiTextHorAlignment.Left;
 					state.LeftIndent = 0;
@@ -762,6 +825,8 @@ namespace Stimulsoft.Report.Import
 					state.SpaceAfter = 0;
 					state.LineHeight = 0;
 					state.LineHeightIsMultiple = false;
+					state.TabStops = null;
+					state.IsOtherTabStop = false;
 					break;
 				case "ql":
 					state.Alignment = StiTextHorAlignment.Left;
@@ -802,6 +867,8 @@ namespace Stimulsoft.Report.Import
 					state.Underline = false;
 					state.Hidden = false;
 					state.FontColor = 0;
+					state.BackColor = 0;
+					state.Script = ScriptNone;
 					state.FontSize = defaultFontSize;
 					state.FontNumber = defaultFontNumber;
 					SetFont(ref state, fontTable);
@@ -1043,6 +1110,7 @@ namespace Stimulsoft.Report.Import
 			double spaceBefore = Math.Max(0, Convert(state.SpaceBefore));
 			double spaceAfter = Math.Max(0, Convert(state.SpaceAfter));
 			text.Margins = new StiMargins(leftIndent, rightIndent, spaceBefore, spaceAfter);
+			SetTabStops(text, state.TabStops, leftIndent);
 
 			//"sl240" with "slmult1" is the single spacing
 			if (state.LineHeightIsMultiple && state.LineHeight > 0)
@@ -1409,11 +1477,156 @@ namespace Stimulsoft.Report.Import
 			}
 		}
 
+		//The color behind the characters. White is the paper: TextEdit writes it for every text, and a text
+		//with a color needs the tags.
+		private int GetBackColorIndex(int index)
+		{
+			if (documentColors == null || index <= 0 || index >= documentColors.Count) return 0;
+
+			Color color = (Color)documentColors[index];
+			bool isWhite = color.R == 255 && color.G == 255 && color.B == 255;
+			return color.A == 0 || isWhite ? 0 : index;
+		}
+
+		//The state is copied with every group, so the array of the stops is never changed: a new one is made.
+		private static int[] AddTabStop(int[] tabStops, int position)
+		{
+			int count = tabStops != null ? tabStops.Length : 0;
+			int[] result = new int[count + 1];
+			if (tabStops != null) Array.Copy(tabStops, result, count);
+			result[count] = position;
+			return result;
+		}
+
+		private static bool IsSameTabStops(int[] first, int[] second)
+		{
+			int firstCount = first != null ? first.Length : 0;
+			int secondCount = second != null ? second.Length : 0;
+			if (firstCount != secondCount) return false;
+
+			for (int index = 0; index < firstCount; index++)
+			{
+				if (first[index] != second[index]) return false;
+			}
+			return true;
+		}
+
+		//A text component has the offset of its first tab stop and one distance between the next ones, so
+		//the first two stops of the paragraph are kept. The stops of RTF are counted from the margin of
+		//the page, the ones of the text - from its own start.
+		private void SetTabStops(StiText text, int[] tabStops, double leftIndent)
+		{
+			if (tabStops == null) return;
+
+			double first = 0;
+			double second = 0;
+			foreach (int tabStop in tabStops)
+			{
+				double position = Convert(tabStop) - leftIndent;
+				if (position < MinTabStop) continue;
+
+				if (first == 0)
+				{
+					first = position;
+				}
+				else if (position > first)
+				{
+					second = position;
+					break;
+				}
+			}
+			if (first == 0) return;
+
+			//GDI+ puts the first stop at the offset plus the distance
+			double distance = second > 0 ? second - first : DefaultTabDistance;
+			if (first < distance) distance = first;
+			text.TextOptions.FirstTabOffset = (float)(first - distance);
+			text.TextOptions.DistanceBetweenTabs = (float)distance;
+		}
+
+		//The padding of a side: the own one of the cell, or the one of the row, or the gap of the row.
+		private double GetPadding(StiRtfPadding cellPadding, StiRtfPadding rowPadding, int side, double gap)
+		{
+			if (cellPadding.InTwips[side]) return Math.Max(0, Convert(cellPadding.Values[side]));
+			if (rowPadding.InTwips[side]) return Math.Max(0, Convert(rowPadding.Values[side]));
+			return gap;
+		}
+
+		private void SetCellPadding(StiText content, StiRtfPadding cellPadding, StiRtfPadding rowPadding, double gap)
+		{
+			double left = GetPadding(cellPadding, rowPadding, PaddingLeft, gap);
+			double right = GetPadding(cellPadding, rowPadding, PaddingRight, gap);
+			double top = GetPadding(cellPadding, rowPadding, PaddingTop, 0);
+			double bottom = GetPadding(cellPadding, rowPadding, PaddingBottom, 0);
+			if (content.Width - left - right < MinCellTextWidth)
+			{
+				left = 0;
+				right = 0;
+			}
+			if (left > 0 || right > 0 || top > 0 || bottom > 0)
+			{
+				content.Margins = new StiMargins(left, right, top, bottom);
+			}
+		}
+
+		private static string GetLongestWord(string text)
+		{
+			string longest = string.Empty;
+			int start = 0;
+			for (int index = 0; index <= text.Length; index++)
+			{
+				if (index < text.Length && !char.IsWhiteSpace(text[index])) continue;
+
+				if (index - start > longest.Length) longest = text.Substring(start, index - start);
+				start = index + 1;
+			}
+			return longest;
+		}
+
+		//The writers of tables make a column as wide as its longest word and the padding need, and a report
+		//measures the word a little wider than Word does. A word which is broken in the middle looks worse
+		//than a text close to the border, so the padding on the sides gives its place to the word.
+		private void FitCellPadding(StiText content)
+		{
+			StiMargins margins = content.Margins;
+			string text = content.Text.Value;
+			if (margins.Left + margins.Right <= 0 || content.AllowHtmlTags || string.IsNullOrEmpty(text)) return;
+
+			string word = GetLongestWord(text);
+			if (word.Length < 2) return;
+
+			StiText probe = new StiText();
+			probe.Page = content.Page;
+			probe.Parent = content.Parent;
+			probe.Font = content.Font;
+			probe.Text = word;
+			probe.OnlyText = true;
+			probe.WordWrap = false;
+			probe.AutoWidth = true;
+			probe.Width = content.Width;
+			//the word is drawn a little wider than it is measured
+			double free = content.Width - probe.GetActualSize().Width - WordWidthReserve;
+			if (free >= margins.Left + margins.Right) return;
+
+			double side = Math.Max(0, Math.Floor(free * 5) / 10);
+			content.Margins = new StiMargins(Math.Min(margins.Left, side), Math.Min(margins.Right, side),
+				margins.Top, margins.Bottom);
+		}
+
+		//A paragraph ends with "par" or, in the files of TextEdit, with a backslash at the end of a line.
+		private static bool IsParagraphEnd(StiRtfTreeNode node)
+		{
+			if (node.NodeType == StiRtfNodeType.Keyword) return node.NodeKey == "par";
+
+			return node.NodeType == StiRtfNodeType.Control && (node.NodeKey == "\r" || node.NodeKey == "\n");
+		}
+
 		private static bool IsSameCharacterFormat(StiRtfState first, StiRtfState second)
 		{
 			return first.FontNumber == second.FontNumber && first.FontSize == second.FontSize &&
 				first.Bold == second.Bold && first.Italic == second.Italic && first.Underline == second.Underline &&
-				first.FontColor == second.FontColor;
+				first.FontColor == second.FontColor && first.BackColor == second.BackColor &&
+				first.Script == second.Script;
 		}
 
 		//Remembers the formatting of the characters which were added to the text from the given position.
@@ -1558,7 +1771,18 @@ namespace Stimulsoft.Report.Import
 			if (bold) html.Append("<b>");
 			if (italic) html.Append("<i>");
 			if (state.Underline) html.Append("<u>");
+			if (state.BackColor != 0)
+			{
+				Color backColor = GetColor(colorTable, state.BackColor);
+				html.Append(string.Format("<background-color=\"#{0:x2}{1:x2}{2:x2}\">",
+					backColor.R, backColor.G, backColor.B));
+			}
+			if (state.Script == ScriptSuper) html.Append("<sup>");
+			if (state.Script == ScriptSub) html.Append("<sub>");
 			AppendHtml(html, res, start, end);
+			if (state.Script == ScriptSub) html.Append("</sub>");
+			if (state.Script == ScriptSuper) html.Append("</sup>");
+			if (state.BackColor != 0) html.Append("</background-color>");
 			if (state.Underline) html.Append("</u>");
 			if (italic) html.Append("</i>");
 			if (bold) html.Append("</b>");
@@ -1574,7 +1798,10 @@ namespace Stimulsoft.Report.Import
 			bool isMixed = false;
 			foreach (StiRtfTextRun run in runs)
 			{
-				if (!IsSameCharacterFormat(run.State, mainState) && GetTextLength(res, run) > 0) isMixed = true;
+				//the font of a component has no color behind the characters and no raised ones
+				bool isOwnFormat = !IsSameCharacterFormat(run.State, mainState) ||
+					run.State.BackColor != 0 || run.State.Script != ScriptNone;
+				if (isOwnFormat && GetTextLength(res, run) > 0) isMixed = true;
 			}
 			if (!isMixed) return null;
 
@@ -1622,7 +1849,8 @@ namespace Stimulsoft.Report.Import
 			return first.SpaceBefore == second.SpaceBefore && first.SpaceAfter == second.SpaceAfter &&
 				first.LeftIndent == second.LeftIndent && first.RightIndent == second.RightIndent &&
 				first.FirstIndent == second.FirstIndent && first.LineHeight == second.LineHeight &&
-				first.LineHeightIsMultiple == second.LineHeightIsMultiple;
+				first.LineHeightIsMultiple == second.LineHeightIsMultiple &&
+				IsSameTabStops(first.TabStops, second.TabStops);
 		}
 
 		private static bool IsContent(StiRtfTreeNode node)
@@ -1945,6 +2173,7 @@ namespace Stimulsoft.Report.Import
                 mainCodePage = 1252;
                 ArrayList fontTable = new ArrayList();
                 ArrayList colorTable = new ArrayList();
+                documentColors = colorTable;
                 defaultFontNumber = 0;
                 fallbackCount = 0;
                 leadByte = -1;
@@ -2291,7 +2520,7 @@ namespace Stimulsoft.Report.Import
                                             break;
                                     }
                                 }
-                                if (node.NodeType == StiRtfNodeType.Keyword && node.NodeKey == "par")
+                                if (IsParagraphEnd(node))
                                 {
                                     paragraphEnded = true;
                                 }
@@ -2391,6 +2620,8 @@ namespace Stimulsoft.Report.Import
                             StiTextHorAlignment rowAlignment = StiTextHorAlignment.Left;
                             double lineHeight = defaultTextBoxHeight;
                             double cellGap = 0;
+                            StiRtfPadding rowPadding = new StiRtfPadding();
+                            StiRtfPadding cellPadding = new StiRtfPadding();
                             while (!endLoop)
                             {
                                 if (res.Length == 0) beginState = currentState;
@@ -2521,6 +2752,8 @@ namespace Stimulsoft.Report.Import
                                                 cellIndex = 0;
                                                 cellContentPresent = false;
                                                 headerRow = false;
+                                                rowPadding = new StiRtfPadding();
+                                                cellPadding = new StiRtfPadding();
                                                 break;
 
                                                 case "trhdr":
@@ -2552,6 +2785,57 @@ namespace Stimulsoft.Report.Import
                                             //the gap between the border of a cell and its text
                                             case "trgaph":
                                                 cellGap = Convert(node.Parameter);
+                                                break;
+
+                                            //the padding of the cells: the value and its unit, 3 is twips. Word reads
+                                            //the left padding of a cell as the top one and the top one as the left one
+                                            case "trpaddl":
+                                                rowPadding.Values[PaddingLeft] = node.Parameter;
+                                                break;
+                                            case "trpaddfl":
+                                                rowPadding.InTwips[PaddingLeft] = node.Parameter == 3;
+                                                break;
+                                            case "trpaddr":
+                                                rowPadding.Values[PaddingRight] = node.Parameter;
+                                                break;
+                                            case "trpaddfr":
+                                                rowPadding.InTwips[PaddingRight] = node.Parameter == 3;
+                                                break;
+                                            case "trpaddt":
+                                                rowPadding.Values[PaddingTop] = node.Parameter;
+                                                break;
+                                            case "trpaddft":
+                                                rowPadding.InTwips[PaddingTop] = node.Parameter == 3;
+                                                break;
+                                            case "trpaddb":
+                                                rowPadding.Values[PaddingBottom] = node.Parameter;
+                                                break;
+                                            case "trpaddfb":
+                                                rowPadding.InTwips[PaddingBottom] = node.Parameter == 3;
+                                                break;
+                                            case "clpadl":
+                                                cellPadding.Values[PaddingTop] = node.Parameter;
+                                                break;
+                                            case "clpadfl":
+                                                cellPadding.InTwips[PaddingTop] = node.Parameter == 3;
+                                                break;
+                                            case "clpadr":
+                                                cellPadding.Values[PaddingRight] = node.Parameter;
+                                                break;
+                                            case "clpadfr":
+                                                cellPadding.InTwips[PaddingRight] = node.Parameter == 3;
+                                                break;
+                                            case "clpadt":
+                                                cellPadding.Values[PaddingLeft] = node.Parameter;
+                                                break;
+                                            case "clpadft":
+                                                cellPadding.InTwips[PaddingLeft] = node.Parameter == 3;
+                                                break;
+                                            case "clpadb":
+                                                cellPadding.Values[PaddingBottom] = node.Parameter;
+                                                break;
+                                            case "clpadfb":
+                                                cellPadding.InTwips[PaddingBottom] = node.Parameter == 3;
                                                 break;
 
                                             case "clmrg":
@@ -2654,11 +2938,8 @@ namespace Stimulsoft.Report.Import
                                                     currentCell.RowLeft = rowLeft;
                                                     currentCell.RowAlignment = rowAlignment;
                                                 }
-                                                if (cellGap > 0)
-                                                {
-                                                    StiMargins gap = new StiMargins(cellGap, cellGap, 0, 0);
-                                                    currentCell.Content.Margins = gap;
-                                                }
+                                                SetCellPadding(currentCell.Content, cellPadding, rowPadding, cellGap);
+                                                cellPadding = new StiRtfPadding();
                                                 currentCell.Content.Height = Math.Abs(lineHeight);
                                                 if (lineHeight < 0) currentCell.FixedHeight = true;
                                                 if (cells.Count < pendingCells.Count)
@@ -2840,6 +3121,7 @@ namespace Stimulsoft.Report.Import
                                     //a cell higher than the page is continued on the next one; without it
                                     //the whole row moves to the next page and leaves an empty one
                                     cell.Content.CanBreak = true;
+                                    FitCellPadding(cell.Content);
                                     if (cell.MergedCellsCount == 0)
                                     {
                                         SizeD cellSize = cell.Content.GetActualSize();

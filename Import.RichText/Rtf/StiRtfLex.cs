@@ -51,7 +51,8 @@ namespace Stimulsoft.Report.Import
 			StiRtfToken token = new StiRtfToken();
 
 			c = rtf.Read();
-            while (c == '\r' || c == '\n' || c == '\t' || c == '\0')
+            //a tab of the file is a tab of the text, the same as the keyword "tab"
+            while (c == '\r' || c == '\n' || c == '\0')
             {
                 c = rtf.Read();
             }
@@ -163,6 +164,15 @@ namespace Stimulsoft.Report.Import
 			{
 				rtf.Read();
 			}
+
+            //the binary data is not a text: its braces and backslashes must not be read as tokens
+            if (token.Key == "bin" && token.HasParameter)
+            {
+                for (int index = 0; index < token.Parameter && rtf.Peek() != Eof; index++)
+                {
+                    rtf.Read();
+                }
+            }
         }
 
         private void ParseText(char ch, StiRtfToken token)
@@ -170,7 +180,7 @@ namespace Stimulsoft.Report.Import
 			StringBuilder text = new StringBuilder(ch.ToString());
 
 			int c = rtf.Peek();
-			while (c == '\r' || c == '\n' || c == '\t' || c == '\0')
+			while (c == '\r' || c == '\n' || c == '\0')
 			{
 				rtf.Read();
 				c = rtf.Peek();
@@ -181,7 +191,7 @@ namespace Stimulsoft.Report.Import
 				rtf.Read();
 				text.Append((char)c);
 				c = rtf.Peek();
-				while (c == '\r' || c == '\n' || c == '\t' || c == '\0')
+				while (c == '\r' || c == '\n' || c == '\0')
 				{
 					rtf.Read();
 					c = rtf.Peek();
