@@ -31,6 +31,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Collections;
 using System.Globalization;
 using Stimulsoft.Report;
@@ -40,7 +41,9 @@ using Stimulsoft.Base;
 using Stimulsoft.Base.Drawing;
 
 #if NETCORE
+using Bitmap = Stimulsoft.Drawing.Bitmap;
 using Font = Stimulsoft.Drawing.Font;
+using ImageFormat = Stimulsoft.Drawing.Imaging.ImageFormat;
 #endif
 
 namespace Stimulsoft.Report.Import
@@ -73,6 +76,8 @@ namespace Stimulsoft.Report.Import
         private bool textHasExpression;
         //the last field gave an expression, its result (the text which the document shows) is skipped
         private bool skipFieldResult;
+        //the picture of "shppict" was read, so its copy in "nonshppict" is not needed
+        private bool pictureCopyIsExtra;
         //the bands of the headers and of the footers by their pages
         private Hashtable pageHeaders = new Hashtable();
         private Hashtable pageFooters = new Hashtable();
@@ -88,8 +93,10 @@ namespace Stimulsoft.Report.Import
 			public int MergedCellsCount = 0;
 			public int MergedX = 0;
 			public bool UsedOnLastPass = false;
+			//the pictures of the cell, null when it has none
+			public ArrayList Pictures = null;
 
-            public StiRtfCell()
+			public StiRtfCell()
 			{
 				Content = new StiText();
 				FixedHeight = false;
@@ -122,6 +129,13 @@ namespace Stimulsoft.Report.Import
 			public int UnicodeSkip;
 			public bool Hidden;
 			}
+
+		private class StiRtfPicture
+		{
+			public byte[] Data;
+			public double Width;
+			public double Height;
+		}
 
 		private class StiRtfPageBand
 		{
@@ -374,10 +388,17 @@ namespace Stimulsoft.Report.Import
 				skipFieldResult = false;
 				return true;
 			}
+
+			//Word can leave "shppict" without the data and keep the picture only in the copy
+			if (key == "nonshppict")
+			{
+				bool isExtra = pictureCopyIsExtra;
+				pictureCopyIsExtra = false;
+				return isExtra;
+			}
 			switch (key)
 			{
 				case "object":
-				case "nonshppict":
 				case "pict":
 				//a footnote is not a part of the body
 				case "footnote":
@@ -668,7 +689,7 @@ namespace Stimulsoft.Report.Import
 
 		//The band which takes the next text or table: a new data band of the body,
 		//or the header or footer of the page.
-		private StiBand GetContentBand(StiPage page, string pageBandKey, int indexBand)
+		private StiBand GetContentBand(StiPage page, string pageBandKey)
 		{
 			StiDataBand band = new StiDataBand();
 			if (pageBandKey != null)
@@ -678,9 +699,10 @@ namespace Stimulsoft.Report.Import
 				return pageBand != null ? pageBand : band;
 			}
 
+			//the bands keep the order of the document: a text can give several of them, with pictures between
+			band.Top = defaultTextBoxHeight * 2 * bandsCounter;
 			band.Name = string.Format("DataBand{0}", bandsCounter++);
 			band.CountData = 1;
-			band.Top = defaultTextBoxHeight * 2 * indexBand;
 			band.CanBreak = true;
 			page.Components.Add(band);
 			return band;
@@ -709,6 +731,347 @@ namespace Stimulsoft.Report.Import
 				pageBand.Band.Components.Add(clone);
 			}
 			bands[page] = pageBand;
+		}
+
+		private void AddTextBand(StiPage page, string pageBand, StringBuilder res, StiRtfState state,
+			ArrayList fontTable, ArrayList colorTable, StiRtfPageData pageData)
+		{
+			StiBand band = GetContentBand(page, pageBand);
+			//the content of a header or of a footer is stacked in its band
+			double bandTop = band is StiDataBand ? 0 : band.Height;
+
+			StiText text = new StiText();
+			SetText(text, res.ToString());
+			res.Length = 0;
+			text.Width = Convert(pageData.SectWidth - pageData.SectMarginLeft - pageData.SectMarginRight);
+			text.Height = defaultTextBoxHeight;
+			FontStyle fs = FontStyle.Regular;
+			if (state.Bold) fs |= FontStyle.Bold;
+			if (state.Italic) fs |= FontStyle.Italic;
+			if (state.Underline) fs |= FontStyle.Underline;
+			float fontSize = (float)(state.FontSize > 0 ? state.FontSize : defaultFontSize);
+			text.Font = new Font(GetFontData(state, fontTable).Name, fontSize, fs);
+			text.TextBrush = new StiSolidBrush(GetColor(colorTable, state.FontColor));
+
+			text.Parent = band;
+			text.Page = page;
+			text.CanGrow = true;
+			text.WordWrap = true;
+			SizeD textSize = text.GetActualSize();
+			if (textSize.Height > text.Height) text.Height = textSize.Height;
+			text.CanBreak = true;
+			text.Top = bandTop;
+			band.Components.Add(text);
+			band.Height = bandTop + text.Height;
+		}
+
+		private static byte[] HexToBytes(StringBuilder hex)
+		{
+			MemoryStream stream = new MemoryStream(hex.Length / 2);
+			int high = -1;
+			for (int index = 0; index < hex.Length; index++)
+			{
+				char symbol = hex[index];
+				int digit;
+				if (symbol >= '0' && symbol <= '9') digit = symbol - '0';
+				else if (symbol >= 'a' && symbol <= 'f') digit = symbol - 'a' + 10;
+				else if (symbol >= 'A' && symbol <= 'F') digit = symbol - 'A' + 10;
+				else continue;
+
+				if (high < 0)
+				{
+					high = digit;
+				}
+				else
+				{
+					stream.WriteByte((byte)(high * 16 + digit));
+					high = -1;
+				}
+			}
+			return stream.ToArray();
+		}
+
+		private static void WriteInt16(byte[] data, int offset, int value)
+		{
+			data[offset] = (byte)(value & 0xFF);
+			data[offset + 1] = (byte)((value >> 8) & 0xFF);
+		}
+
+		//RTF keeps a metafile without the placeable header, and it is not an image file without it.
+		//The size is in the units of the metafile: 0.01 mm for the usual mapping mode.
+		private static byte[] AddMetafileHeader(byte[] data, int width, int height)
+		{
+			if (width <= 0 || height <= 0) return null;
+
+			int unitsPerInch = 2540;
+			while (width > 32767 || height > 32767)
+			{
+				width /= 2;
+				height /= 2;
+				unitsPerInch /= 2;
+			}
+
+			byte[] result = new byte[data.Length + 22];
+			result[0] = 0xD7;
+			result[1] = 0xCD;
+			result[2] = 0xC6;
+			result[3] = 0x9A;
+			WriteInt16(result, 10, width);
+			WriteInt16(result, 12, height);
+			WriteInt16(result, 14, unitsPerInch);
+
+			int checksum = 0;
+			for (int index = 0; index < 20; index += 2)
+			{
+				checksum ^= result[index] | (result[index + 1] << 8);
+			}
+			WriteInt16(result, 20, checksum);
+
+			Array.Copy(data, 0, result, 22, data.Length);
+			return result;
+		}
+
+		//RTF keeps a bitmap as a DIB, the file of a bitmap has one more header before it.
+		private static byte[] AddBitmapHeader(byte[] data)
+		{
+			if (data.Length < 40) return null;
+
+			int headerSize = BitConverter.ToInt32(data, 0);
+			int bitCount = BitConverter.ToInt16(data, 14);
+			int compression = BitConverter.ToInt32(data, 16);
+			int colors = BitConverter.ToInt32(data, 32);
+			if (headerSize < 40 || headerSize > data.Length || colors < 0 || colors > 256) return null;
+
+			if (colors == 0 && bitCount <= 8) colors = 1 << bitCount;
+			int offset = 14 + headerSize + colors * 4;
+			if (compression == 3 && headerSize == 40) offset += 12;
+
+			byte[] result = new byte[data.Length + 14];
+			result[0] = (byte)'B';
+			result[1] = (byte)'M';
+			Array.Copy(BitConverter.GetBytes(result.Length), 0, result, 2, 4);
+			Array.Copy(BitConverter.GetBytes(offset), 0, result, 10, 4);
+			Array.Copy(data, 0, result, 14, data.Length);
+			return result;
+		}
+
+		private static bool StartsWith(byte[] data, int offset, params byte[] signature)
+		{
+			if (data.Length < offset + signature.Length) return false;
+
+			for (int index = 0; index < signature.Length; index++)
+			{
+				if (data[offset + index] != signature[index]) return false;
+			}
+			return true;
+		}
+
+		//The kind of the image by its first bytes: the keyword of the format can be wrong, and a picture can
+		//be an empty stub. Returns "file" for a ready image file, "wmf" and "dib" for the data which need
+		//a header, null for the data which is not an image.
+		private static string GetImageKind(byte[] data, string format)
+		{
+			if (data.Length < 20) return null;
+
+			if (StartsWith(data, 0, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+			{
+				//the signature, the header and the end of the smallest PNG take 45 bytes
+				return data.Length >= 45 ? "file" : null;
+			}
+			if (StartsWith(data, 0, 0xFF, 0xD8, 0xFF)) return "file";
+			if (StartsWith(data, 0, 0x42, 0x4D)) return "file";
+			if (StartsWith(data, 0, 0xD7, 0xCD, 0xC6, 0x9A)) return "file";
+			if (StartsWith(data, 0, 1, 0, 0, 0) && StartsWith(data, 40, 0x20, 0x45, 0x4D, 0x46)) return "file";
+			if ((data[0] == 1 || data[0] == 2) && StartsWith(data, 1, 0, 9, 0)) return "wmf";
+
+			return format == "dibitmap" ? "dib" : null;
+		}
+
+		//A bitmap is not compressed: it makes the report several times bigger than the same image as PNG.
+		private static byte[] ConvertBitmapToPng(byte[] data)
+		{
+			try
+			{
+				using (MemoryStream input = new MemoryStream(data))
+				using (Bitmap bitmap = new Bitmap(input))
+				using (MemoryStream output = new MemoryStream())
+				{
+					bitmap.Save(output, ImageFormat.Png);
+					return output.ToArray();
+				}
+			}
+			catch (Exception)
+			{
+				//a bitmap which can't be read stays as it is, the report decides what to do with it
+				return data;
+			}
+		}
+
+		//Reads the group "pict": the image and its size on the page. Returns null for a format without a reader.
+		private StiRtfPicture ReadPicture(StiRtfTreeNode group)
+		{
+			string format = null;
+			int width = 0;
+			int height = 0;
+			int goalWidth = 0;
+			int goalHeight = 0;
+			int scaleX = 100;
+			int scaleY = 100;
+			StringBuilder hex = new StringBuilder();
+
+			for (int index = 0; index < group.ChildNodes.Count; index++)
+			{
+				StiRtfTreeNode node = group.ChildNodes[index];
+				if (node.NodeType == StiRtfNodeType.Text) hex.Append(node.NodeKey);
+				if (node.NodeType != StiRtfNodeType.Keyword) continue;
+
+				switch (node.NodeKey)
+				{
+					case "pngblip":
+					case "jpegblip":
+					case "emfblip":
+					case "wmetafile":
+					case "dibitmap":
+						format = node.NodeKey;
+						break;
+					case "picw":
+						width = node.Parameter;
+						break;
+					case "pich":
+						height = node.Parameter;
+						break;
+					case "picwgoal":
+						goalWidth = node.Parameter;
+						break;
+					case "pichgoal":
+						goalHeight = node.Parameter;
+						break;
+					case "picscalex":
+						if (node.Parameter > 0) scaleX = node.Parameter;
+						break;
+					case "picscaley":
+						if (node.Parameter > 0) scaleY = node.Parameter;
+						break;
+					//the binary data is not read by the lexer
+					case "bin":
+						return null;
+				}
+			}
+			if (format == null) return null;
+
+			bool isMetafile = format == "wmetafile" || format == "emfblip";
+			//the size in twips: the wanted one, or the own size of the image in 0.01 mm or in pixels
+			double twipsWidth = goalWidth > 0 ? goalWidth : (isMetafile ? width * 1440d / 2540 : width * 15d);
+			double twipsHeight = goalHeight > 0 ? goalHeight : (isMetafile ? height * 1440d / 2540 : height * 15d);
+
+			byte[] data = HexToBytes(hex);
+			string kind = GetImageKind(data, format);
+			if (kind == null) return null;
+
+			if (kind == "wmf")
+			{
+				if (width <= 0) width = (int)(goalWidth * 2540d / 1440);
+				if (height <= 0) height = (int)(goalHeight * 2540d / 1440);
+				data = AddMetafileHeader(data, width, height);
+			}
+			if (kind == "dib") data = AddBitmapHeader(data);
+			if (data == null) return null;
+			if (StartsWith(data, 0, 0x42, 0x4D)) data = ConvertBitmapToPng(data);
+
+			StiRtfPicture picture = new StiRtfPicture();
+			picture.Data = data;
+			picture.Width = twipsWidth > 0 ? Convert(twipsWidth * scaleX / 100) : 100;
+			picture.Height = twipsHeight > 0 ? Convert(twipsHeight * scaleY / 100) : 100;
+			return picture;
+		}
+
+		//The picture of the group which the reading has come to, null when the group is not a shown picture.
+		private StiRtfPicture ReadPictureGroup(StiRtfTreeNode group, int skipGroupCount, StiRtfState state)
+		{
+			if (skipGroupCount > 0 || state.Hidden) return null;
+
+			StiRtfTreeNode first = group.ChildNodes[0];
+			if (first.NodeType != StiRtfNodeType.Keyword || first.NodeKey != "pict") return null;
+
+			StiRtfPicture picture = ReadPicture(group);
+			if (picture != null && group.ParentNode != null && IsPictureHolder(group.ParentNode))
+			{
+				pictureCopyIsExtra = true;
+			}
+			return picture;
+		}
+
+		//Word writes a picture twice: in the starred group "shppict" and, for the old readers, in "nonshppict".
+		private static bool IsPictureHolder(StiRtfTreeNode group)
+		{
+			if (group.ChildNodes.Count < 2) return false;
+
+			StiRtfTreeNode second = group.ChildNodes[1];
+			return second.NodeType == StiRtfNodeType.Keyword && second.NodeKey == "shppict";
+		}
+
+		private static StiImage CreateImage(StiRtfPicture picture, double maxWidth, StiPage page)
+		{
+			double width = picture.Width;
+			double height = picture.Height;
+			if (maxWidth > 0 && width > maxWidth)
+			{
+				height = Math.Round(height * maxWidth / width, 1);
+				width = maxWidth;
+			}
+
+			StiImage image = new StiImage();
+			image.ImageBytes = picture.Data;
+			image.Stretch = true;
+			image.AspectRatio = true;
+			image.Width = width;
+			image.Height = height;
+			image.Page = page;
+			return image;
+		}
+
+		private void AddImageBand(StiPage page, string pageBand, StiRtfPicture picture, StiRtfPageData pageData)
+		{
+			StiBand band = GetContentBand(page, pageBand);
+			double bandTop = band is StiDataBand ? 0 : band.Height;
+			double maxWidth = Convert(pageData.SectWidth - pageData.SectMarginLeft - pageData.SectMarginRight);
+
+			StiImage image = CreateImage(picture, maxWidth, page);
+			image.Top = bandTop;
+			image.Parent = band;
+			band.Components.Add(image);
+			band.Height = bandTop + image.Height;
+		}
+
+		private static double GetPicturesHeight(StiRtfCell cell)
+		{
+			if (cell.Pictures == null) return 0;
+
+			double height = 0;
+			foreach (StiRtfPicture picture in cell.Pictures)
+			{
+				double width = cell.Content.Width;
+				bool isWide = width > 0 && picture.Width > width;
+				height += isWide ? Math.Round(picture.Height * width / picture.Width, 1) : picture.Height;
+			}
+			return height;
+		}
+
+		//The pictures of a cell lie over its text component, one under another from the top of the cell.
+		private static void AddCellPictures(StiBand band, StiRtfCell cell, StiPage page)
+		{
+			if (cell.Pictures == null) return;
+
+			double top = cell.Content.Top;
+			foreach (StiRtfPicture picture in cell.Pictures)
+			{
+				StiImage image = CreateImage(picture, cell.Content.Width, page);
+				image.Left = cell.Content.Left;
+				image.Top = top;
+				image.Parent = band;
+				band.Components.Add(image);
+				top += image.Height;
+			}
 		}
 
 		private static bool IsSameTable(ArrayList bandsList, int index, string pageBand)
@@ -849,6 +1212,7 @@ namespace Stimulsoft.Report.Import
                 nestedLevel = 0;
                 textHasExpression = false;
                 skipFieldResult = false;
+                pictureCopyIsExtra = false;
                 pageHeaders.Clear();
                 pageFooters.Clear();
                 StiRtfNodeCollection main = tree.rootNode.ChildNodes[0].ChildNodes;
@@ -1013,7 +1377,7 @@ namespace Stimulsoft.Report.Import
                                     {
                                         nestedLevel = 1;
                                     }
-                                    else if (nestedLevel == 0)
+                                    else if (nestedLevel == 0 && !IsPictureHolder(node))
                                     {
                                         needSkipGroup = true;
                                     }
@@ -1057,6 +1421,17 @@ namespace Stimulsoft.Report.Import
                                             needSkipGroup = true;
                                         }
                                     }
+                                }
+                                StiRtfPicture picture = ReadPictureGroup(node, skipGroupCount, currentState);
+                                if (picture != null)
+                                {
+                                    //the picture stands in the text: the text before it gets its own band
+                                    if (res.Length > 0)
+                                    {
+                                        AddTextBand(currentPage, data.pageBand, res, beginState,
+                                            fontTable, colorTable, pageData);
+                                    }
+                                    AddImageBand(currentPage, data.pageBand, picture, pageData);
                                 }
                                 if (needSkipGroup || (skipGroupCount > 0))
                                 {
@@ -1176,33 +1551,7 @@ namespace Stimulsoft.Report.Import
                         }
                         if (res.Length > 0)
                         {
-                            StiBand band = GetContentBand(currentPage, data.pageBand, indexBand);
-                            //the content of a header or of a footer is stacked in its band
-                            double bandTop = band is StiDataBand ? 0 : band.Height;
-
-                            StiText text = new StiText();
-                            SetText(text, res.ToString());
-                            //text.Width = defaultTextBoxWidth;
-                            text.Width = Convert(pageData.SectWidth - pageData.SectMarginLeft - pageData.SectMarginRight);
-                            text.Height = defaultTextBoxHeight;
-                            FontStyle fs = FontStyle.Regular;
-                            if (beginState.Bold) fs |= FontStyle.Bold;
-                            if (beginState.Italic) fs |= FontStyle.Italic;
-                            if (beginState.Underline) fs |= FontStyle.Underline;
-                            float fontSize = (float)(beginState.FontSize > 0 ? beginState.FontSize : defaultFontSize);
-                            text.Font = new Font(GetFontData(beginState, fontTable).Name, fontSize, fs);
-                            text.TextBrush = new StiSolidBrush(GetColor(colorTable, beginState.FontColor));
-
-                            text.Parent = band;
-                            text.Page = currentPage;
-                            text.CanGrow = true;
-                            text.WordWrap = true;
-                            SizeD textSize = text.GetActualSize();
-                            if (textSize.Height > text.Height) text.Height = textSize.Height;
-                            text.CanBreak = true;
-                            text.Top = bandTop;
-                            band.Components.Add(text);
-                            band.Height = bandTop + text.Height;
+                            AddTextBand(currentPage, data.pageBand, res, beginState, fontTable, colorTable, pageData);
                         }
 
                         #endregion
@@ -1240,6 +1589,7 @@ namespace Stimulsoft.Report.Import
                                     //the row takes the definition of the previous row, not its text
                                     StiRtfCell previousCell = ((StiRtfCell)previousCells[indexComp]).Clone();
                                     previousCell.Content.Text = string.Empty;
+                                    previousCell.Pictures = null;
                                     cells.Add(previousCell);
                                 }
                                 if (cells.Count > 0) currentCell = (StiRtfCell)cells[0];
@@ -1258,6 +1608,8 @@ namespace Stimulsoft.Report.Import
                             bool ignoredDefinition = false;
                             //the cells which got their content before the definition of the row (SAS writes so)
                             ArrayList pendingCells = new ArrayList();
+                            //the pictures which stand before the definition of the row, they go to its first cell
+                            ArrayList contentPictures = null;
                             StiBorderSides borderSide = StiBorderSides.None;
                             double lineHeight = defaultTextBoxHeight;
                             while (!endLoop)
@@ -1277,7 +1629,7 @@ namespace Stimulsoft.Report.Import
                                         {
                                             nestedLevel = 1;
                                         }
-                                        else if (nestedLevel == 0)
+                                        else if (nestedLevel == 0 && !IsPictureHolder(node))
                                         {
                                             needSkipGroup = true;
                                         }
@@ -1321,6 +1673,12 @@ namespace Stimulsoft.Report.Import
                                                 needSkipGroup = true;
                                             }
                                         }
+                                    }
+                                    StiRtfPicture picture = ReadPictureGroup(node, skipGroupCount, currentState);
+                                    if (picture != null)
+                                    {
+                                        if (currentCell.Pictures == null) currentCell.Pictures = new ArrayList();
+                                        currentCell.Pictures.Add(picture);
                                     }
                                     if (needSkipGroup || (skipGroupCount > 0))
                                     {
@@ -1366,6 +1724,8 @@ namespace Stimulsoft.Report.Import
                                                 //a definition in the middle of the row is read only when the row
                                                 //had none yet: the content of a row, or a nested table at its
                                                 //start, can stand before the definition
+                                                ArrayList rowPictures = currentCell.Pictures;
+                                                if (rowPictures != null) contentPictures = rowPictures;
                                                 cells = new ArrayList();
                                                 currentCell = new StiRtfCell();
                                                 cellIndex = 0;
@@ -1468,6 +1828,8 @@ namespace Stimulsoft.Report.Import
                                                     currentCell.Content.Font = content.Font;
                                                     currentCell.Content.TextBrush = content.TextBrush;
                                                     currentCell.Content.HorAlignment = content.HorAlignment;
+                                                    StiRtfCell pendingCell = (StiRtfCell)pendingCells[cells.Count];
+                                                    currentCell.Pictures = pendingCell.Pictures;
                                                 }
                                                 cells.Add(currentCell);
                                                 currentCell = new StiRtfCell();
@@ -1485,6 +1847,11 @@ namespace Stimulsoft.Report.Import
                                                     {
                                                         cellIndex = 0;
                                                         currentCell = (StiRtfCell)cells[0];
+                                                        if (contentPictures != null)
+                                                        {
+                                                            currentCell.Pictures = contentPictures;
+                                                            contentPictures = null;
+                                                        }
                                                     }
                                                 }
                                                 break;
@@ -1558,7 +1925,7 @@ namespace Stimulsoft.Report.Import
                         #endregion
 
                         #region create new band
-                        StiBand band = GetContentBand(currentPage, tablePageBand, indexBand);
+                        StiBand band = GetContentBand(currentPage, tablePageBand);
                         if (band is StiDataBand) band.Brush = new StiSolidBrush(Color.FromArgb(32, Color.Green));
                         double bandTop = band is StiDataBand ? 0 : band.Height;
                         #endregion
@@ -1597,11 +1964,16 @@ namespace Stimulsoft.Report.Import
                                     cell.Content.Page = currentPage;
                                     cell.Content.CanGrow = true;
                                     cell.Content.WordWrap = true;
+                                    //a cell higher than the page is continued on the next one; without it
+                                    //the whole row moves to the next page and leaves an empty one
+                                    cell.Content.CanBreak = true;
                                     if (cell.MergedCellsCount == 0)
                                     {
                                         SizeD cellSize = cell.Content.GetActualSize();
                                         if (cellSize.Height > cell.Content.Height) cell.Content.Height = cellSize.Height;
                                     }
+                                    double picturesHeight = GetPicturesHeight(cell);
+                                    if (picturesHeight > cell.Content.Height) cell.Content.Height = picturesHeight;
                                     if (cell.Content.Height > linesHeight[indexLine]) linesHeight[indexLine] = cell.Content.Height;
                                 }
                             }
@@ -1640,6 +2012,7 @@ namespace Stimulsoft.Report.Import
                                         cell.Content.Parent = band;
                                         StiText text = cell.Content;
                                         band.Components.Add(text);
+                                        AddCellPictures(band, cell, currentPage);
                                     }
                                     cellPosX += cell.Content.Width;
                                 }
