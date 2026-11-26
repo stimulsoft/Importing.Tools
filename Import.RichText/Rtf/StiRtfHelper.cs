@@ -56,6 +56,15 @@ namespace Stimulsoft.Report.Import
 		private const double defaultTextBoxWidth = 748;
 		private const double defaultFontSize = 12;
 		private const string defaultFontName = "Arial";
+		//the names of one family for the scripts: "Arial CYR", "Times New Roman CE", "Arial (Hebrew)"
+		private static readonly string[] FontNameScripts = { " CYR", " CE", " Greek", " Tur", " Baltic",
+			" (Hebrew)", " (Arabic)", " (Vietnamese)", " (Thai)" };
+		private static readonly char[] FontNameSeparators = { '-', ' ' };
+		//the indents of a paragraph are dropped when they leave less than this width for the text
+		private const double MinTextWidth = 50;
+		private const float MinLineSpacing = 0.5f;
+		private const float MaxLineSpacing = 5f;
+		private static Hashtable fontNames;
 
         private const int codePagesTableSize = 14;
 		private int[,] codePagesTable = null;
@@ -140,6 +149,14 @@ namespace Stimulsoft.Report.Import
 			public bool SymbolFont;
 			public int UnicodeSkip;
 			public bool Hidden;
+			//the paragraph: its indents and the space around it in twips, the height of a line
+			public int LeftIndent;
+			public int RightIndent;
+			public int FirstIndent;
+			public int SpaceBefore;
+			public int SpaceAfter;
+			public int LineHeight;
+			public bool LineHeightIsMultiple;
 			}
 
 		private class StiRtfPicture
@@ -160,6 +177,8 @@ namespace Stimulsoft.Report.Import
 			public int Number;
 			public int Charset;
 			public string Name;
+			public bool Bold;
+			public bool Italic;
 			public char[] Encoding;
 			public int CodePage;
 			public bool HasCharset;
@@ -305,6 +324,134 @@ namespace Stimulsoft.Report.Import
 			return index >= 0 && index < colorTable.Count ? (Color)colorTable[index] : Color.Black;
 		}
 
+		//The families which Windows doesn't have under the name of the file: the PostScript names of macOS,
+		//the fonts of old Windows and their metric twins of Linux. GDI replaces a part of them by itself,
+		//a report doesn't, and a text of a missing font is shown with the fallback one.
+		private static Hashtable GetFontNames()
+		{
+			if (fontNames != null) return fontNames;
+
+			Hashtable names = new Hashtable();
+			string[] arial = { "arial", "arialmt", "helvetica", "helveticaneue", "helv", "albanyamt",
+				"liberationsans", "nimbussansl" };
+			string[] times = { "timesnewroman", "timesnewromanpsmt", "timesnewromanps", "times", "timesroman",
+				"tmsrmn", "cgtimes", "msserif", "liberationserif", "thorndaleamt", "nimbusromanno9l" };
+			string[] courier = { "couriernew", "couriernewpsmt", "couriernewps", "courier", "fixedsys",
+				"liberationmono", "cumberlandamt", "nimbusmonol" };
+
+			foreach (string name in arial)
+			{
+				names[name] = "Arial";
+			}
+
+			foreach (string name in times)
+			{
+				names[name] = "Times New Roman";
+			}
+
+			foreach (string name in courier)
+			{
+				names[name] = "Courier New";
+			}
+
+			names["menlo"] = "Consolas";
+			names["monaco"] = "Consolas";
+			names["calibri"] = "Calibri";
+			names["verdana"] = "Verdana";
+			names["tahoma"] = "Tahoma";
+			names["arialunicodems"] = "Arial Unicode MS";
+			names["trebuchetms"] = "Trebuchet MS";
+			names["lucidagrande"] = "Lucida Sans Unicode";
+			names["mssansserif"] = "Microsoft Sans Serif";
+			names["palatino"] = "Palatino Linotype";
+			names["centuryschoolbook"] = "Century Schoolbook";
+			names["newcenturyschlbk"] = "Century Schoolbook";
+			names["avantgarde"] = "Century Gothic";
+
+			fontNames = names;
+			return fontNames;
+		}
+
+		private static string GetKnownFontName(string name)
+		{
+			return (string)GetFontNames()[name.Replace(" ", string.Empty).ToLowerInvariant()];
+		}
+
+		//The style which stands in the name of a font: "Bold", "BoldItalicMT", "Oblique", "Roman".
+		private static bool TryGetFontNameStyle(string word, ref bool bold, ref bool italic)
+		{
+			word = word.ToLowerInvariant();
+			if (word.Length > 2 && word.EndsWith("mt", StringComparison.Ordinal)) word = word.Substring(0, word.Length - 2);
+
+			switch (word)
+			{
+				case "regular":
+				case "roman":
+				case "light":
+				case "medium":
+					return true;
+
+				case "bold":
+					bold = true;
+					return true;
+
+				case "italic":
+				case "oblique":
+					italic = true;
+					return true;
+
+				case "bolditalic":
+				case "boldoblique":
+					bold = true;
+					italic = true;
+					return true;
+
+				default:
+					return false;
+			}
+		}
+
+		//"Arial-BoldMT" is Arial with the bold style, "Times New Roman CYR" is Times New Roman,
+		//"Helvetica" is Arial. A name which is not known stays as it is.
+		private static void SetFontName(StiRtfFontData fontData, string name)
+		{
+			foreach (string script in FontNameScripts)
+			{
+				if (name.Length > script.Length && name.EndsWith(script, StringComparison.OrdinalIgnoreCase))
+				{
+					name = name.Substring(0, name.Length - script.Length).Trim();
+				}
+			}
+
+			string family = name;
+			string knownName = GetKnownFontName(family);
+			bool bold = false;
+			bool italic = false;
+			bool postScript = false;
+
+			//the words of the style stand at the end: "Helvetica-BoldOblique", "Arial Bold Italic"
+			while (knownName == null)
+			{
+				int pos = family.LastIndexOfAny(FontNameSeparators);
+				if (pos <= 0 || !TryGetFontNameStyle(family.Substring(pos + 1), ref bold, ref italic)) break;
+
+				if (family[pos] == '-') postScript = true;
+				family = family.Substring(0, pos).Trim();
+				knownName = GetKnownFontName(family);
+			}
+
+			//"Arial Rounded MT Bold" is a family of its own, its last word is not a style
+			if (knownName == null && !postScript)
+			{
+				fontData.Name = name;
+				return;
+			}
+
+			fontData.Name = knownName ?? family;
+			fontData.Bold = bold;
+			fontData.Italic = italic;
+		}
+
 		private static void ParseFontTable(StiRtfTreeNode node, ArrayList fontTable)
 		{
 			//a font is either a group "{\f0\froman Times;}" or a part of the plain sequence
@@ -342,7 +489,7 @@ namespace Stimulsoft.Report.Import
 					else if (fontData != null && fontData.Name == null && node.NodeType == StiRtfNodeType.Text)
 					{
 						string name = node.NodeKey.Trim().TrimEnd(';').Trim();
-						if (name.Length > 0) fontData.Name = name;
+						if (name.Length > 0) SetFontName(fontData, name);
 					}
 				}
 				node = node.NextFlateToken;
@@ -589,8 +736,38 @@ namespace Stimulsoft.Report.Import
 					break;
 
 				case "pard":
+					state.Alignment = StiTextHorAlignment.Left;
+					state.LeftIndent = 0;
+					state.RightIndent = 0;
+					state.FirstIndent = 0;
+					state.SpaceBefore = 0;
+					state.SpaceAfter = 0;
+					state.LineHeight = 0;
+					state.LineHeightIsMultiple = false;
+					break;
 				case "ql":
 					state.Alignment = StiTextHorAlignment.Left;
+					break;
+				case "li":
+					state.LeftIndent = node.Parameter;
+					break;
+				case "ri":
+					state.RightIndent = node.Parameter;
+					break;
+				case "fi":
+					state.FirstIndent = node.Parameter;
+					break;
+				case "sb":
+					state.SpaceBefore = node.Parameter;
+					break;
+				case "sa":
+					state.SpaceAfter = node.Parameter;
+					break;
+				case "sl":
+					state.LineHeight = node.Parameter;
+					break;
+				case "slmult":
+					state.LineHeightIsMultiple = node.Parameter == 1;
 					break;
 				case "qr":
 					state.Alignment = StiTextHorAlignment.Right;
@@ -827,12 +1004,38 @@ namespace Stimulsoft.Report.Import
 			res.Length = 0;
 			text.Width = Convert(pageData.SectWidth - pageData.SectMarginLeft - pageData.SectMarginRight);
 			text.Height = defaultTextBoxHeight;
+
+			//a hanging indent starts the first line on the left of the others: the text stands where it starts
+			double leftIndent = Math.Max(0, Convert(state.LeftIndent + Math.Min(state.FirstIndent, 0)));
+			double rightIndent = Math.Max(0, Convert(state.RightIndent));
+			if (text.Width - leftIndent - rightIndent < MinTextWidth)
+			{
+				leftIndent = 0;
+				rightIndent = 0;
+			}
+
+			//the indents and the space around the paragraph are the margins of the text: the component keeps
+			//its place and its width, so several of them can be put on one band
+			double spaceBefore = Math.Max(0, Convert(state.SpaceBefore));
+			double spaceAfter = Math.Max(0, Convert(state.SpaceAfter));
+			text.Margins = new StiMargins(leftIndent, rightIndent, spaceBefore, spaceAfter);
+
+			//"sl240" with "slmult1" is the single spacing
+			if (state.LineHeightIsMultiple && state.LineHeight > 0)
+			{
+				float lineSpacing = state.LineHeight / 240f;
+				text.LineSpacing = Math.Max(MinLineSpacing, Math.Min(MaxLineSpacing, lineSpacing));
+			}
+
 			FontStyle fs = FontStyle.Regular;
 			if (state.Bold) fs |= FontStyle.Bold;
 			if (state.Italic) fs |= FontStyle.Italic;
 			if (state.Underline) fs |= FontStyle.Underline;
 			float fontSize = (float)(state.FontSize > 0 ? state.FontSize : defaultFontSize);
-			text.Font = new Font(GetFontData(state, fontTable).Name, fontSize, fs);
+			StiRtfFontData fontData = GetFontData(state, fontTable);
+			if (fontData.Bold) fs |= FontStyle.Bold;
+			if (fontData.Italic) fs |= FontStyle.Italic;
+			text.Font = new Font(fontData.Name, fontSize, fs);
 			text.TextBrush = new StiSolidBrush(GetColor(colorTable, state.FontColor));
 
 			text.Parent = band;
@@ -1188,7 +1391,18 @@ namespace Stimulsoft.Report.Import
 		{
 			return first.FontNumber == second.FontNumber && first.FontSize == second.FontSize &&
 				first.Bold == second.Bold && first.Italic == second.Italic && first.Underline == second.Underline &&
-				first.FontColor == second.FontColor && first.Alignment == second.Alignment;
+				first.FontColor == second.FontColor && first.Alignment == second.Alignment &&
+				IsSameParagraphFormat(first, second);
+		}
+
+		//The paragraphs with a space between them are separate components: a text has no such space inside.
+		private static bool IsSameParagraphFormat(StiRtfState first, StiRtfState second)
+		{
+			if (first.SpaceAfter != second.SpaceAfter || first.SpaceAfter + second.SpaceBefore > 0) return false;
+
+			return first.LeftIndent == second.LeftIndent && first.RightIndent == second.RightIndent &&
+				first.FirstIndent == second.FirstIndent && first.LineHeight == second.LineHeight &&
+				first.LineHeightIsMultiple == second.LineHeightIsMultiple;
 		}
 
 		private static bool IsContent(StiRtfTreeNode node)
@@ -2263,6 +2477,8 @@ namespace Stimulsoft.Report.Import
                                                 if (beginState.Italic) fs |= FontStyle.Italic;
                                                 if (beginState.Underline) fs |= FontStyle.Underline;
                                                 var fontData = GetFontData(beginState, fontTable);
+                                                if (fontData.Bold) fs |= FontStyle.Bold;
+                                                if (fontData.Italic) fs |= FontStyle.Italic;
                                                 currentCell.Content.Font = new Font(fontData.Name, (beginState.FontSize > 0 ? (float)beginState.FontSize : 2), fs);    //!!! fontSize
                                                 Color textColor = GetColor(colorTable, beginState.FontColor);
                                                 currentCell.Content.TextBrush = new StiSolidBrush(textColor);
