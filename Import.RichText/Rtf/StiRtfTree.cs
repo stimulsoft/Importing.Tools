@@ -353,6 +353,53 @@ namespace Stimulsoft.Report.Import
             return node.NodeType == StiRtfNodeType.Keyword &&
                 TokensHash.ContainsKey(node.NodeKey) && (int)TokensHash[node.NodeKey] == 0;
         }
+
+        //The tokens which make a text band of their own: a text, the end of a paragraph, a picture.
+        private static bool IsContentToken(StiRtfTreeNode node)
+        {
+            if (node.NodeType == StiRtfNodeType.Text) return node.NodeKey.Trim().Length > 0;
+            if (node.NodeType == StiRtfNodeType.Control) return node.NodeKey == "'";
+            if (node.NodeType != StiRtfNodeType.Keyword) return false;
+
+            switch (node.NodeKey)
+            {
+                case "par":
+                case "page":
+                case "sect":
+                case "line":
+                case "tab":
+                case "u":
+                case "pict":
+                case "object":
+                case "field":
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        //Writers put keywords between the end of a row and the definition of the next one: "pard", "itap0",
+        //"ltrrow". They are not a text between two tables: as a band of their own they cut the table into
+        //rows, and the cells which are merged in a column lose each other.
+        private static bool IsRowGap(ArrayList bandsList, StiRtfTreeNode start, StiRtfTreeNode end)
+        {
+            if (bandsList.Count == 0) return false;
+
+            StiRtfBandData previous = (StiRtfBandData)bandsList[bandsList.Count - 1];
+            if (!previous.isTableRow || previous.pageBand != GetPageBand(end)) return false;
+
+            StiRtfTreeNode node = start;
+            while (node != null)
+            {
+                if (IsContentToken(node)) return false;
+                if (node == end) return true;
+
+                node = node.NextFlateToken;
+            }
+            return false;
+        }
+
         public ArrayList GetBandsData()
 		{
 			StiRtfNodeCollection main = rootNode.ChildNodes[0].ChildNodes;
@@ -444,7 +491,12 @@ namespace Stimulsoft.Report.Import
 						bool isGroupEnd = lastNode.NodeType == StiRtfNodeType.GroupEnd;
 						if (isGroupEnd && IsPageBandGroup(lastNode.ParentNode)) break;
 				}
-				if (node != data.start)
+				if (tableFounded && (node != data.start) && IsRowGap(bandsList, data.start, lastNode))
+				{
+					//the keywords between two rows stay with the first of them, the table goes on
+					((StiRtfBandData)bandsList[bandsList.Count - 1]).end = lastNode;
+				}
+				else if (node != data.start)
 				{
 						data.end = lastNode;
 						data.isTableRow = false;
