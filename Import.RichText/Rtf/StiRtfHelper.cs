@@ -78,6 +78,8 @@ namespace Stimulsoft.Report.Import
         private bool skipFieldResult;
         //the picture of "shppict" was read, so its copy in "nonshppict" is not needed
         private bool pictureCopyIsExtra;
+        //the text of the shape was read from "shpinst", so its copy in "shprslt" is not needed
+        private bool shapeResultIsExtra;
         //the bands of the headers and of the footers by their pages
         private Hashtable pageHeaders = new Hashtable();
         private Hashtable pageFooters = new Hashtable();
@@ -95,6 +97,8 @@ namespace Stimulsoft.Report.Import
 			public bool UsedOnLastPass = false;
 			//the pictures of the cell, null when it has none
 			public ArrayList Pictures = null;
+			//the cell continues the cell on its left
+			public bool JoinedToLeft = false;
 
 			public StiRtfCell()
 			{
@@ -126,6 +130,8 @@ namespace Stimulsoft.Report.Import
 			public char[] Encoding;
 			public int CodePage;
 			public bool FontHasCharset;
+			public StiTextHorAlignment Alignment;
+			public bool SymbolFont;
 			public int UnicodeSkip;
 			public bool Hidden;
 			}
@@ -362,6 +368,8 @@ namespace Stimulsoft.Report.Import
 			state.Encoding = fontData.Encoding;
 			state.CodePage = fontData.CodePage;
 			state.FontHasCharset = fontData.HasCharset;
+			//the charset 2 is a font of symbols: Symbol, Wingdings
+			state.SymbolFont = fontData.Charset == 2;
 		}
 
 		private static bool IsLeadByte(int codePage, int value)
@@ -389,6 +397,13 @@ namespace Stimulsoft.Report.Import
 				return true;
 			}
 
+			if (key == "shprslt")
+			{
+				bool isExtra = shapeResultIsExtra;
+				shapeResultIsExtra = false;
+				return isExtra;
+			}
+
 			//Word can leave "shppict" without the data and keep the picture only in the copy
 			if (key == "nonshppict")
 			{
@@ -400,6 +415,8 @@ namespace Stimulsoft.Report.Import
 			{
 				case "object":
 				case "pict":
+				//a property of a shape: its name and value are not a text of the document
+				case "sp":
 				//a footnote is not a part of the body
 				case "footnote":
 				//the copy of a nested table for the readers which don't know them
@@ -420,6 +437,30 @@ namespace Stimulsoft.Report.Import
 			//the end of the row can come twice: as "nestrow" and as the end of its group
 			if (res.Length > 0 && res[res.Length - 1] == '\n') return;
 			res.Append("\r\n");
+		}
+
+		//The markers of the lists are characters of the fonts of symbols. A text component has one font
+		//for the whole text, so the usual markers are replaced with the same signs of Unicode. The value
+		//is the code of the character in the font: a byte, or the same byte in the private area U+F0xx.
+		private static char GetSymbol(int value)
+		{
+			switch (value & 0xFF)
+			{
+				case 0xB7:
+					return (char)0x2022;
+
+				case 0xA7:
+					return (char)0x25AA;
+
+				case 0xD8:
+					return (char)0x27A2;
+
+				case 0xFC:
+					return (char)0x2713;
+
+				default:
+					return (char)0;
+			}
 		}
 
 		private static void AppendChar(StringBuilder res, char value, StiRtfState state)
@@ -456,7 +497,9 @@ namespace Stimulsoft.Report.Import
 				leadByte = value;
 				return;
 			}
-			AppendChar(res, state.Encoding[value], state);
+
+			char symbol = state.SymbolFont ? GetSymbol(value) : (char)0;
+			AppendChar(res, symbol != 0 ? symbol : state.Encoding[value], state);
 		}
 
 		//The text of the document and the keywords of the character formatting,
@@ -538,6 +581,20 @@ namespace Stimulsoft.Report.Import
 				case "v":
 					state.Hidden = !node.HasParameter || node.Parameter != 0;
 					break;
+
+				case "pard":
+				case "ql":
+					state.Alignment = StiTextHorAlignment.Left;
+					break;
+				case "qr":
+					state.Alignment = StiTextHorAlignment.Right;
+					break;
+				case "qc":
+					state.Alignment = StiTextHorAlignment.Center;
+					break;
+				case "qj":
+					state.Alignment = StiTextHorAlignment.Width;
+					break;
 				case "plain":
 					state.Bold = false;
 					state.Italic = false;
@@ -586,7 +643,9 @@ namespace Stimulsoft.Report.Import
 					state.UnicodeSkip = Math.Max(0, node.Parameter);
 					break;
 				case "u":
-					AppendChar(res, (char)(node.Parameter & 0xFFFF), state);
+					int code = node.Parameter & 0xFFFF;
+					char sign = code >= 0xF020 && code <= 0xF0FF ? GetSymbol(code) : (char)0;
+					AppendChar(res, sign != 0 ? sign : (char)code, state);
 					fallbackCount = state.UnicodeSkip;
 					break;
 
@@ -740,8 +799,13 @@ namespace Stimulsoft.Report.Import
 			//the content of a header or of a footer is stacked in its band
 			double bandTop = band is StiDataBand ? 0 : band.Height;
 
+			//the end of the last paragraph is not an empty line of the text
+			int length = res.Length;
+			if (length >= 2 && res[length - 2] == '\r' && res[length - 1] == '\n') res.Length = length - 2;
+
 			StiText text = new StiText();
 			SetText(text, res.ToString());
+			text.HorAlignment = state.Alignment;
 			res.Length = 0;
 			text.Width = Convert(pageData.SectWidth - pageData.SectMarginLeft - pageData.SectMarginRight);
 			text.Height = defaultTextBoxHeight;
@@ -1001,7 +1065,33 @@ namespace Stimulsoft.Report.Import
 			return picture;
 		}
 
-		//Word writes a picture twice: in the starred group "shppict" and, for the old readers, in "nonshppict".
+		//The starred groups which are read, not skipped. Word writes a picture twice: in "shppict" and,
+		//for the old readers, in "nonshppict". A shape with a text (a text box) keeps it in "shptxt"
+		//inside "shpinst"; a shape without a text stays skipped, its picture comes from "shprslt".
+		private bool IsContentHolder(StiRtfTreeNode group)
+		{
+			if (group.ChildNodes.Count < 2) return false;
+
+			StiRtfTreeNode second = group.ChildNodes[1];
+			if (second.NodeType != StiRtfNodeType.Keyword) return false;
+			if (second.NodeKey == "shppict") return true;
+			if (second.NodeKey != "shpinst") return false;
+
+			for (int index = 2; index < group.ChildNodes.Count; index++)
+			{
+				StiRtfTreeNode child = group.ChildNodes[index];
+				if (child.NodeType != StiRtfNodeType.Group) continue;
+
+				StiRtfTreeNode first = child.ChildNodes[0];
+				if (first.NodeType == StiRtfNodeType.Keyword && first.NodeKey == "shptxt")
+				{
+					shapeResultIsExtra = true;
+					return true;
+				}
+			}
+			return false;
+		}
+
 		private static bool IsPictureHolder(StiRtfTreeNode group)
 		{
 			if (group.ChildNodes.Count < 2) return false;
@@ -1072,6 +1162,56 @@ namespace Stimulsoft.Report.Import
 				band.Components.Add(image);
 				top += image.Height;
 			}
+		}
+
+		//The formatting which a text component keeps for the whole text: a paragraph with another one
+		//starts a new component.
+		private static bool IsSameFormat(StiRtfState first, StiRtfState second)
+		{
+			return first.FontNumber == second.FontNumber && first.FontSize == second.FontSize &&
+				first.Bold == second.Bold && first.Italic == second.Italic && first.Underline == second.Underline &&
+				first.FontColor == second.FontColor && first.Alignment == second.Alignment;
+		}
+
+		private static bool IsContent(StiRtfTreeNode node)
+		{
+			if (node.NodeType == StiRtfNodeType.Text) return node.NodeKey.Trim().Length > 0;
+			if (node.NodeType == StiRtfNodeType.Control) return node.NodeKey == "'";
+
+			return node.NodeType == StiRtfNodeType.Keyword && node.NodeKey == "u";
+		}
+
+		//Joins a cell to the cell on its left. Some writers put the text of the merged cell
+		//not to the first of its parts, so the text of the joined part is kept too.
+		private static void JoinCell(StiRtfCell firstCell, StiRtfCell cell)
+		{
+			string text = cell.Content.Text.Value;
+			if (!string.IsNullOrEmpty(text))
+			{
+				string firstText = firstCell.Content.Text.Value;
+				if (string.IsNullOrEmpty(firstText))
+				{
+					firstCell.Content.Text = text;
+					firstCell.Content.Font = cell.Content.Font;
+					firstCell.Content.TextBrush = cell.Content.TextBrush;
+					firstCell.Content.HorAlignment = cell.Content.HorAlignment;
+				}
+				else
+				{
+					firstCell.Content.Text = firstText + " " + text;
+				}
+				if (cell.Content.OnlyText) firstCell.Content.OnlyText = true;
+			}
+
+			if (cell.Pictures != null)
+			{
+				if (firstCell.Pictures == null) firstCell.Pictures = new ArrayList();
+				firstCell.Pictures.AddRange(cell.Pictures);
+			}
+
+			firstCell.Content.Width += cell.Content.Width;
+			cell.Content.Width = 0;
+			cell.Merged = true;
 		}
 
 		private static bool IsSameTable(ArrayList bandsList, int index, string pageBand)
@@ -1150,6 +1290,13 @@ namespace Stimulsoft.Report.Import
 
 		private void UpdatePage(StiPage page, StiRtfPageData pageData)
 		{
+			//The page of the report swaps its width and height when the orientation changes, and RTF already keeps
+			//the size of a landscape page as it is. So the orientation is set by the size and before it.
+			StiPageOrientation orientation = pageData.SectWidth > pageData.SectHeight
+				? StiPageOrientation.Landscape
+				: StiPageOrientation.Portrait;
+			if (page.Orientation != orientation) page.Orientation = orientation;
+
 			page.PageWidth = Convert(pageData.SectWidth);
 			page.PageHeight = Convert(pageData.SectHeight);
             page.Margins = new StiMargins(
@@ -1157,7 +1304,6 @@ namespace Stimulsoft.Report.Import
                 Convert(pageData.SectMarginRight),
                 Convert(pageData.SectMarginTop),
                 Convert(pageData.SectMarginBottom));
-			if (pageData.SectLandscape) page.Orientation = StiPageOrientation.Landscape;
         }
         #endregion
 
@@ -1213,6 +1359,7 @@ namespace Stimulsoft.Report.Import
                 textHasExpression = false;
                 skipFieldResult = false;
                 pictureCopyIsExtra = false;
+                shapeResultIsExtra = false;
                 pageHeaders.Clear();
                 pageFooters.Clear();
                 StiRtfNodeCollection main = tree.rootNode.ChildNodes[0].ChildNodes;
@@ -1358,6 +1505,7 @@ namespace Stimulsoft.Report.Import
                     if (!data.isTableRow)
                     {
                         #region plain text
+                        bool paragraphEnded = false;
                         StringBuilder res = new StringBuilder();
                         bool endLoop = false;
                         while (!endLoop)
@@ -1377,7 +1525,7 @@ namespace Stimulsoft.Report.Import
                                     {
                                         nestedLevel = 1;
                                     }
-                                    else if (nestedLevel == 0 && !IsPictureHolder(node))
+                                    else if (nestedLevel == 0 && (skipGroupCount > 0 || !IsContentHolder(node)))
                                     {
                                         needSkipGroup = true;
                                     }
@@ -1543,6 +1691,21 @@ namespace Stimulsoft.Report.Import
                                             break;
                                     }
                                 }
+                                if (node.NodeType == StiRtfNodeType.Keyword && node.NodeKey == "par")
+                                {
+                                    paragraphEnded = true;
+                                }
+                                else if (paragraphEnded && IsContent(node))
+                                {
+                                    //the next paragraph has its own font or alignment: the text before it is closed
+                                    paragraphEnded = false;
+                                    if (res.Length > 0 && !IsSameFormat(beginState, currentState))
+                                    {
+                                        AddTextBand(currentPage, data.pageBand, res, beginState,
+                                            fontTable, colorTable, pageData);
+                                        beginState = currentState;
+                                    }
+                                }
                                 ProcessTextToken(node, res, ref currentState, fontTable);
                             }
                             if (node == data.end) endLoop = true;
@@ -1612,6 +1775,7 @@ namespace Stimulsoft.Report.Import
                             ArrayList contentPictures = null;
                             StiBorderSides borderSide = StiBorderSides.None;
                             double lineHeight = defaultTextBoxHeight;
+                            double cellGap = 0;
                             while (!endLoop)
                             {
                                 if (res.Length == 0) beginState = currentState;
@@ -1629,7 +1793,7 @@ namespace Stimulsoft.Report.Import
                                         {
                                             nestedLevel = 1;
                                         }
-                                        else if (nestedLevel == 0 && !IsPictureHolder(node))
+                                        else if (nestedLevel == 0 && (skipGroupCount > 0 || !IsContentHolder(node)))
                                         {
                                             needSkipGroup = true;
                                         }
@@ -1736,6 +1900,15 @@ namespace Stimulsoft.Report.Import
                                                 lineHeight = Convert(node.Parameter);
                                                 break;
 
+                                            //the gap between the border of a cell and its text
+                                            case "trgaph":
+                                                cellGap = Convert(node.Parameter);
+                                                break;
+
+                                            case "clmrg":
+                                                currentCell.JoinedToLeft = true;
+                                                break;
+
                                             case "clvmgf":
                                                 currentCell.UsedOnLastPass = true;
                                                 mergedCells.Add(currentCell);
@@ -1818,6 +1991,11 @@ namespace Stimulsoft.Report.Import
                                                 double previousPosX = posX;
                                                 posX = Convert(node.Parameter);
                                                 currentCell.Content.Width = posX - previousPosX;
+                                                if (cellGap > 0)
+                                                {
+                                                    StiMargins gap = new StiMargins(cellGap, cellGap, 0, 0);
+                                                    currentCell.Content.Margins = gap;
+                                                }
                                                 currentCell.Content.Height = Math.Abs(lineHeight);
                                                 if (lineHeight < 0) currentCell.FixedHeight = true;
                                                 if (cells.Count < pendingCells.Count)
@@ -1926,7 +2104,6 @@ namespace Stimulsoft.Report.Import
 
                         #region create new band
                         StiBand band = GetContentBand(currentPage, tablePageBand);
-                        if (band is StiDataBand) band.Brush = new StiSolidBrush(Color.FromArgb(32, Color.Green));
                         double bandTop = band is StiDataBand ? 0 : band.Height;
                         #endregion
 
@@ -1946,6 +2123,26 @@ namespace Stimulsoft.Report.Import
                                 matrix[indexLine, indexCell] = (StiRtfCell)currentLine[indexCell];
                             }
                         }
+                        //the cells which are merged in a row: the first one takes the width of the others
+                        for (int indexLine = 0; indexLine < table.Count; indexLine++)
+                        {
+                            StiRtfCell firstCell = null;
+                            for (int indexCell = 0; indexCell < cellsCount; indexCell++)
+                            {
+                                StiRtfCell cell = matrix[indexLine, indexCell];
+                                if (cell == null) continue;
+
+                                if (cell.JoinedToLeft && firstCell != null)
+                                {
+                                    JoinCell(firstCell, cell);
+                                }
+                                else
+                                {
+                                    firstCell = cell;
+                                }
+                            }
+                        }
+
                         //first pass
                         for (int indexLine = 0; indexLine < table.Count; indexLine++)
                         {
