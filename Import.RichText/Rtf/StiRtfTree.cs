@@ -134,6 +134,12 @@ namespace Stimulsoft.Report.Import
 						level++;
 						break;
 					case StiRtfTokenType.GroupEnd:
+						//an extra closing brace of a damaged file is skipped
+						if (level == 0)
+						{
+							res = -1;
+							break;
+						}
 						newNode = new StiRtfTreeNode(StiRtfNodeType.GroupEnd, "GROUPEND", false, 0);
 						curNode.AppendChild(newNode);
 						curNode = curNode.ParentNode;
@@ -199,9 +205,16 @@ namespace Stimulsoft.Report.Import
 				tok = lex.NextToken();
 			}
 
-            rootNode.UpdateNodeIndex(true);
+            //the groups of a truncated file are closed, the import relies on the closing nodes
+            while (level > 0)
+            {
+                curNode.AppendChild(new StiRtfTreeNode(StiRtfNodeType.GroupEnd, "GROUPEND", false, 0));
+                curNode = curNode.ParentNode;
+                level--;
+                res = -1;
+            }
 
-			if (level != 0) res = -1;
+            rootNode.UpdateNodeIndex(true);
 			return res;
         }
 
@@ -286,6 +299,8 @@ namespace Stimulsoft.Report.Import
 			{
 				pos++;
 			}
+            //a file without groups has no header, its text starts at once
+            if (pos >= main.Count) pos = 0;
             //find last group in header or info
             while (pos < main.Count)
             {
@@ -327,6 +342,7 @@ namespace Stimulsoft.Report.Import
             #endregion
 
 			ArrayList bandsList = new ArrayList();
+			if (pos >= main.Count) return bandsList;
 
 			StiRtfTreeNode node = main[pos];
 			StiRtfTreeNode lastNode = null;

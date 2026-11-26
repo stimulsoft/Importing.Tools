@@ -30,6 +30,7 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Globalization;
 
 namespace Stimulsoft.Report.Import
 {
@@ -104,8 +105,12 @@ namespace Stimulsoft.Report.Import
                     if (token.Key == "\'")
                     {
                         string code = string.Format("{0}{1}", (char)rtf.Read(), (char)rtf.Read());
-                        token.HasParameter = true;
-                        token.Parameter = Convert.ToInt32(code, 16);
+                        //a damaged code is skipped, it must not stop the whole import
+                        if (int.TryParse(code, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var charCode))
+                        {
+                            token.HasParameter = true;
+                            token.Parameter = charCode;
+                        }
                     }
                 }
                 return;
@@ -144,7 +149,8 @@ namespace Stimulsoft.Report.Import
 					paramStr.Append((char)c);
 					c = rtf.Peek();
 				}
-				int paramInt = Convert.ToInt32(paramStr.ToString());
+				//a parameter without digits or a too long one is zero
+				int.TryParse(paramStr.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var paramInt);
                 if (negative)
                 {
                     paramInt = -paramInt;

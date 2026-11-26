@@ -1,10 +1,10 @@
-#region Copyright (C) 2003-2025 Stimulsoft
+#region Copyright (C) 2003-2026 Stimulsoft
 /*
 {*******************************************************************}
 {																	}
 {	Stimulsoft Reports  											}
 {																	}
-{	Copyright (C) 2003-2025 Stimulsoft     							}
+{	Copyright (C) 2003-2026 Stimulsoft     							}
 {	ALL RIGHTS RESERVED												}
 {																	}
 {	The entire contents of this file is protected by U.S. and		}
@@ -25,7 +25,7 @@
 {																	}
 {*******************************************************************}
 */
-#endregion Copyright (C) 2003-2025 Stimulsoft
+#endregion Copyright (C) 2003-2026 Stimulsoft
 
 using System;
 using System.IO;
@@ -39,6 +39,10 @@ using Stimulsoft.Report.Components;
 using Stimulsoft.Base;
 using Stimulsoft.Base.Drawing;
 
+#if NETCORE
+using Font = Stimulsoft.Drawing.Font;
+#endif
+
 namespace Stimulsoft.Report.Import
 {
     public class StiRtfHelper
@@ -47,6 +51,8 @@ namespace Stimulsoft.Report.Import
         private const double TwipsToHi	= 1 / 14.4;
 		private const double defaultTextBoxHeight = 10;
 		private const double defaultTextBoxWidth = 748;
+		private const double defaultFontSize = 12;
+		private const string defaultFontName = "Arial";
 
         private const int codePagesTableSize = 14;
 		private int[,] codePagesTable = null;
@@ -56,6 +62,7 @@ namespace Stimulsoft.Report.Import
 		private Hashtable codepageToEncodingTables = null;
 
         private int bandsCounter = 0;
+        private StiRtfFontData defaultFontData = new StiRtfFontData { Name = defaultFontName };
         #endregion
 
         #region Structures
@@ -157,8 +164,16 @@ namespace Stimulsoft.Report.Import
 			}
 			if (!langToCodepage.ContainsKey(lang))
 			{
-				CultureInfo ci = new CultureInfo(lang, false);
-				int codePage = ci.TextInfo.ANSICodePage;
+				int codePage = -1;
+				try
+				{
+					codePage = new CultureInfo(lang, false).TextInfo.ANSICodePage;
+					if (codePage == 0) codePage = -1;
+				}
+				catch (ArgumentException)
+				{
+					//an unknown language keeps the current code page
+				}
 				langToCodepage[lang] = codePage;
 			}
 			return (int)langToCodepage[lang];
@@ -169,7 +184,15 @@ namespace Stimulsoft.Report.Import
 			if (!codepageToEncodingTables.ContainsKey(codepage))
 			{
 				char[] table = new char[256];
-				Encoding enc = Encoding.GetEncoding(codepage);
+				Encoding enc;
+				try
+				{
+					enc = Encoding.GetEncoding(codepage);
+				}
+				catch (Exception e) when (e is ArgumentException || e is NotSupportedException)
+				{
+					enc = Encoding.GetEncoding(1252);
+				}
 				byte[] encodeBuf = new byte[256];
 				for (int index = 0; index < 256; index++) encodeBuf[index] = (byte)(index);
 				enc.GetChars(encodeBuf, 0, 256, table, 0);
@@ -204,19 +227,88 @@ namespace Stimulsoft.Report.Import
                 }
             }
 
-            if (fontData != null)
+            //a font which the table doesn't have is replaced: the first font of the table or the default one
+            if (fontData == null) fontData = fontTable.Count > 0 ? (StiRtfFontData)fontTable[0] : defaultFontData;
+
+            if (fontData.Encoding == null)
+            {
+                int codePage = mainCodePage;
+                for (int index = 0; index < codePagesTableSize; index++)
+                {
+                    if (codePagesTable[index, 2] == fontData.Charset) codePage = codePagesTable[index, 1];
+                }
+                fontData.Encoding = GetEncodingTable(codePage);
+            }
+            return fontData;
+		}
+
+		private static Color GetColor(ArrayList colorTable, int index)
+		{
+			//a file without the color table, or a wrong index, gives the default color
+			return index >= 0 && index < colorTable.Count ? (Color)colorTable[index] : Color.Black;
+		}
+
+		private static void ParseFontTable(StiRtfTreeNode node, ArrayList fontTable)
+		{
+			//a font is either a group "{\f0\froman Times;}" or a part of the plain sequence
+			//"\f0\fswiss Helvetica;\f1\fnil Menlo;", as macOS writes it
+			StiRtfFontData fontData = null;
+			int level = 0;
+			int skipLevel = 0;
+			node = node.NextFlateToken;
+			while (node != null && level >= 0)
 			{
-				if (fontData.Encoding == null)
+				if (node.NodeType == StiRtfNodeType.Group)
 				{
-					int codePage = mainCodePage;
-					for (int index = 0; index < codePagesTableSize; index++)
-					{
-						if (codePagesTable[index, 2] == fontData.Charset) codePage = codePagesTable[index, 1];
-					}
-					fontData.Encoding = GetEncodingTable(codePage);
+					level++;
+					StiRtfTreeNode firstNode = node.ChildNodes[0];
+					bool ignorable = firstNode.NodeType == StiRtfNodeType.Control && firstNode.NodeKey == "*";
+					if (ignorable || skipLevel > 0) skipLevel++;
 				}
+				else if (node.NodeType == StiRtfNodeType.GroupEnd)
+				{
+					level--;
+					if (skipLevel > 0) skipLevel--;
+				}
+				else if (skipLevel == 0)
+				{
+					if (node.NodeType == StiRtfNodeType.Keyword && node.NodeKey == "f")
+					{
+						fontData = new StiRtfFontData();
+						fontData.Number = node.Parameter;
+						fontTable.Add(fontData);
+					}
+					else if (fontData != null && node.NodeType == StiRtfNodeType.Keyword && node.NodeKey == "fcharset")
+					{
+						fontData.Charset = node.Parameter;
+					}
+					else if (fontData != null && fontData.Name == null && node.NodeType == StiRtfNodeType.Text)
+					{
+						string name = node.NodeKey.Trim().TrimEnd(';').Trim();
+						if (name.Length > 0) fontData.Name = name;
+					}
+				}
+				node = node.NextFlateToken;
 			}
-			return fontData;
+
+			foreach (StiRtfFontData data in fontTable)
+			{
+				if (data.Name == null) data.Name = defaultFontName;
+			}
+		}
+
+		private static bool HasCellDefinitionAhead(StiRtfTreeNode node, StiRtfTreeNode end)
+		{
+			//true while the definition of the row goes on: one more "cellx" stands before the content of the cells
+			while (node != null && node != end)
+			{
+				node = node.NextFlateToken;
+				if (node == null || node.NodeType != StiRtfNodeType.Keyword) continue;
+
+				if (node.NodeKey == "cellx") return true;
+				if (node.NodeKey == "cell" || node.NodeKey == "row" || node.NodeKey == "trowd") return false;
+			}
+			return false;
 		}
 
 		private void UpdatePage(StiPage page, StiRtfPageData pageData)
@@ -264,12 +356,20 @@ namespace Stimulsoft.Report.Import
 
                 StiRtfTree tree = new StiRtfTree();
                 tree.LoadRtfText(sb.ToString());
+
+                //not an RTF document: there is nothing to import
+                if (tree.rootNode.ChildNodes.Count == 0 || tree.rootNode.ChildNodes[0].NodeType != StiRtfNodeType.Group)
+                {
+                    return report;
+                }
+
                 ArrayList bandsList = tree.GetBandsData();
 
                 #region Scan header
                 mainCodePage = 1252;
                 ArrayList fontTable = new ArrayList();
                 ArrayList colorTable = new ArrayList();
+                int defaultFontNumber = 0;
                 StiRtfNodeCollection main = tree.rootNode.ChildNodes[0].ChildNodes;
                 int pos = 0;
                 //bool afterGroup = false;
@@ -284,34 +384,7 @@ namespace Stimulsoft.Report.Import
                         {
                             if (node.NodeKey == "fonttbl")
                             {
-                                #region parse font table
-                                node = node.NextToken;
-                                while (node.NodeType == StiRtfNodeType.Group)
-                                {
-                                    StiRtfTreeNode nextNode = node.ChildNodes[0];
-                                    StiRtfFontData fontData = new StiRtfFontData();
-                                    while (nextNode.NodeType != StiRtfNodeType.GroupEnd)
-                                    {
-                                        if ((nextNode.NodeType == StiRtfNodeType.Keyword) && (nextNode.NodeKey == "f"))
-                                        {
-                                            fontData.Number = nextNode.Parameter;
-                                        }
-                                        if ((nextNode.NodeType == StiRtfNodeType.Keyword) && (nextNode.NodeKey == "fcharset"))
-                                        {
-                                            fontData.Charset = nextNode.Parameter;
-                                        }
-                                        if (nextNode.NodeType == StiRtfNodeType.Text)
-                                        {
-                                            string name = nextNode.NodeKey;
-                                            if (name.EndsWith(";", StringComparison.InvariantCulture)) name = name.Substring(0, name.Length - 1);
-                                            fontData.Name = name;
-                                        }
-                                        nextNode = nextNode.NextToken;
-                                    }
-                                    fontTable.Add(fontData);
-                                    node = node.NextToken;
-                                }
-                                #endregion
+                                ParseFontTable(node, fontTable);
                             }
                             if (node.NodeKey == "colortbl")
                             {
@@ -361,6 +434,10 @@ namespace Stimulsoft.Report.Import
                             if (currentNode.NodeKey == "ansicpg")
                             {
                                 mainCodePage = currentNode.Parameter;
+                            }
+                            if (currentNode.NodeKey == "deff")
+                            {
+                                defaultFontNumber = currentNode.Parameter;
                             }
                         }
                         //find next group
@@ -420,6 +497,9 @@ namespace Stimulsoft.Report.Import
                 StiRtfState currentState = new StiRtfState();
                 StiRtfState beginState = new StiRtfState();
                 currentState.Encoding = GetEncodingTable(mainCodePage);
+                //the defaults of RTF for a text without "\f" and "\fs"
+                currentState.FontNumber = defaultFontNumber;
+                currentState.FontSize = defaultFontSize;
                 int skipGroupCount = 0;
                 #endregion
 
@@ -488,7 +568,7 @@ namespace Stimulsoft.Report.Import
                             }
                             if (node.NodeType == StiRtfNodeType.GroupEnd)
                             {
-                                currentState = (StiRtfState)states.Pop();
+                                if (states.Count > 0) currentState = (StiRtfState)states.Pop();
                                 if (skipGroupCount > 0) skipGroupCount--;
                             }
 
@@ -652,6 +732,7 @@ namespace Stimulsoft.Report.Import
                             }
                             if (node == data.end) endLoop = true;
                             node = node.NextFlateToken;
+                            if (node == null) endLoop = true;
                         }
                         if (res.Length > 0)
                         {
@@ -672,8 +753,9 @@ namespace Stimulsoft.Report.Import
                             if (beginState.Bold) fs |= FontStyle.Bold;
                             if (beginState.Italic) fs |= FontStyle.Italic;
                             if (beginState.Underline) fs |= FontStyle.Underline;
-                            text.Font = new Font(GetFontData(beginState, fontTable).Name, (float)beginState.FontSize, fs);
-                            text.TextBrush = new StiSolidBrush((Color)colorTable[beginState.FontColor]);
+                            float fontSize = (float)(beginState.FontSize > 0 ? beginState.FontSize : defaultFontSize);
+                            text.Font = new Font(GetFontData(beginState, fontTable).Name, fontSize, fs);
+                            text.TextBrush = new StiSolidBrush(GetColor(colorTable, beginState.FontColor));
 
                             text.Parent = band;
                             text.Page = currentPage;
@@ -716,16 +798,22 @@ namespace Stimulsoft.Report.Import
                             {
                                 for (int indexComp = 0; indexComp < previousCells.Count; indexComp++)
                                 {
-                                    cells.Add(((StiRtfCell)previousCells[indexComp]).Clone());
+                                    //the row takes the definition of the previous row, not its text
+                                    StiRtfCell previousCell = ((StiRtfCell)previousCells[indexComp]).Clone();
+                                    previousCell.Content.Text = string.Empty;
+                                    cells.Add(previousCell);
                                 }
-                                currentCell = (StiRtfCell)cells[0];
+                                if (cells.Count > 0) currentCell = (StiRtfCell)cells[0];
                             }
                             int cellIndex = 0;
                             double posX = 0;
                             StringBuilder res = new StringBuilder();
                             bool endLoop = false;
                             bool skipLoop = false;
-                            bool cellContentPresent = false;
+                            //a row without its own definition takes the cells of the previous row,
+                            //its content starts at once
+                            bool cellContentPresent = cells.Count > 0;
+                            bool cellClosed = false;
                             StiBorderSides borderSide = StiBorderSides.None;
                             double lineHeight = defaultTextBoxHeight;
                             while (!endLoop)
@@ -783,7 +871,7 @@ namespace Stimulsoft.Report.Import
                                 }
                                 if (node.NodeType == StiRtfNodeType.GroupEnd)
                                 {
-                                    currentState = (StiRtfState)states.Pop();
+                                    if (states.Count > 0) currentState = (StiRtfState)states.Pop();
                                     if (skipGroupCount > 0) skipGroupCount--;
                                 }
 
@@ -811,6 +899,7 @@ namespace Stimulsoft.Report.Import
                                                 cells = new ArrayList();
                                                 currentCell = new StiRtfCell();
                                                 cellIndex = 0;
+                                                cellContentPresent = false;
                                                 break;
 
                                             case "trrh":
@@ -884,11 +973,15 @@ namespace Stimulsoft.Report.Import
 
                                             case "brdrcf":
                                                 currentCell.Content.Border.Side |= borderSide;
-                                                currentCell.Content.Border.Color = (Color)colorTable[node.Parameter];
+                                                currentCell.Content.Border.Color = GetColor(colorTable, node.Parameter);
                                                 break;
 
                                             case "clcbpat":
-                                                currentCell.Content.Brush = new StiSolidBrush((Color)colorTable[node.Parameter]);
+                                                if (node.Parameter >= 0 && node.Parameter < colorTable.Count)
+                                                {
+                                                    Color backColor = (Color)colorTable[node.Parameter];
+                                                    currentCell.Content.Brush = new StiSolidBrush(backColor);
+                                                }
                                                 break;
 
                                             case "cellx":
@@ -902,19 +995,20 @@ namespace Stimulsoft.Report.Import
                                                 currentCell.Content.Left = posX;
                                                 currentCell.MergedX = node.Parameter;
                                                 cellIndex++;
-                                                break;
-                                            #endregion
-
-                                            #region //txtpar
-                                            case "pard":
-                                                //switch to text options
-                                                if (!cellContentPresent)
+                                                //the last "cellx" ends the definition of the row,
+                                                //the content of the first cell follows; it doesn't have
+                                                //to start with "pard", and "pard" can stand inside
+                                                //the definition
+                                                if (!cellContentPresent && !HasCellDefinitionAhead(node, data.end))
                                                 {
                                                     cellIndex = 0;
                                                     cellContentPresent = true;
                                                     currentCell = (StiRtfCell)cells[0];
                                                 }
                                                 break;
+                                                #endregion
+
+                                            #region //txtpar
 
                                             case "ql":
                                                 currentCell.Content.HorAlignment = StiTextHorAlignment.Left;
@@ -983,6 +1077,7 @@ namespace Stimulsoft.Report.Import
                                                 break;
 
                                             case "cell":
+                                                cellClosed = true;
                                                 currentCell.Content.Text = res.ToString();
                                                 FontStyle fs = FontStyle.Regular;
                                                 if (beginState.Bold) fs |= FontStyle.Bold;
@@ -990,7 +1085,8 @@ namespace Stimulsoft.Report.Import
                                                 if (beginState.Underline) fs |= FontStyle.Underline;
                                                 var fontData = GetFontData(beginState, fontTable);
                                                 currentCell.Content.Font = new Font(fontData.Name, (beginState.FontSize > 0 ? (float)beginState.FontSize : 2), fs);    //!!! fontSize
-                                                currentCell.Content.TextBrush = new StiSolidBrush((Color)colorTable[beginState.FontColor]);
+                                                Color textColor = GetColor(colorTable, beginState.FontColor);
+                                                currentCell.Content.TextBrush = new StiSolidBrush(textColor);
                                                 res = new StringBuilder();
                                                 cellIndex++;
                                                 if (cellIndex < cells.Count)
@@ -1015,8 +1111,10 @@ namespace Stimulsoft.Report.Import
                                 }
                                 if (node == data.end) endLoop = true;
                                 node = node.NextFlateToken;
+                                if (node == null) endLoop = true;
                             }
-                            if ((cells != null) && (cells.Count > 0) && cellContentPresent)
+                            //a tail of the table without any "cell" is not a row
+                            if ((cells != null) && (cells.Count > 0) && cellContentPresent && cellClosed)
                             {
                                 table.Add(cells);
                                 if (mergedCells.Count > 0)
@@ -1048,7 +1146,12 @@ namespace Stimulsoft.Report.Import
 
                         #region recalculate cells height
                         double[] linesHeight = new double[table.Count];
-                        StiRtfCell[,] matrix = new StiRtfCell[table.Count, 64];
+                        int cellsCount = 0;
+                        foreach (ArrayList line in table)
+                        {
+                            cellsCount = Math.Max(cellsCount, line.Count);
+                        }
+                        StiRtfCell[,] matrix = new StiRtfCell[table.Count, cellsCount];
                         for (int indexLine = 0; indexLine < table.Count; indexLine++)
                         {
                             ArrayList currentLine = (ArrayList)table[indexLine];
@@ -1061,7 +1164,7 @@ namespace Stimulsoft.Report.Import
                         for (int indexLine = 0; indexLine < table.Count; indexLine++)
                         {
                             //calculate real height of each cell, then set line height
-                            for (int indexCell = 0; indexCell < 64; indexCell++)
+                            for (int indexCell = 0; indexCell < cellsCount; indexCell++)
                             {
                                 StiRtfCell cell = matrix[indexLine, indexCell];
                                 if (cell != null)
@@ -1091,7 +1194,7 @@ namespace Stimulsoft.Report.Import
                         for (int indexLine = 0; indexLine < table.Count; indexLine++)
                         {
                             double cellPosX = 0;
-                            for (int indexCell = 0; indexCell < 64; indexCell++)
+                            for (int indexCell = 0; indexCell < cellsCount; indexCell++)
                             {
                                 StiRtfCell cell = matrix[indexLine, indexCell];
                                 if (cell != null)
@@ -1102,7 +1205,11 @@ namespace Stimulsoft.Report.Import
                                     {
                                         for (int indexCount = 0; indexCount < cell.MergedCellsCount; indexCount++)
                                         {
-                                            cell.Content.Height += linesHeight[indexLine + indexCount + 1];
+                                            int mergedLine = indexLine + indexCount + 1;
+                                            if (mergedLine < table.Count)
+                                            {
+                                                cell.Content.Height += linesHeight[mergedLine];
+                                            }
                                         }
                                         cell.Content.CanBreak = true;
                                     }
