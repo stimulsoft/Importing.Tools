@@ -465,6 +465,11 @@ namespace Stimulsoft.Report.Import
 				data = new StiRtfBandData();
 				data.start = node;
 				bool tableFounded = false;
+				//the paragraph of the current token: where it starts and the token before it
+				StiRtfTreeNode paragraphStart = node;
+				StiRtfTreeNode paragraphPrevious = lastNode;
+				//a paragraph without "pard" takes the "intbl" of the previous one, so it may be a part of a row
+				bool isPlainParagraph = false;
 
 				while ((node != null) && (node != lastRootNode))
 				{
@@ -481,12 +486,27 @@ namespace Stimulsoft.Report.Import
 					}
 					if ((node.NodeType == StiRtfNodeType.Keyword) && (node.NodeKey == "intbl"))
 					{
-						node = data.start;
+						//a row without a definition starts with its paragraph: the text before it is not in a cell
+						//the groups which are closed after the "par" belong to the text before the row
+						while (paragraphStart != node && paragraphStart.NodeType == StiRtfNodeType.GroupEnd)
+						{
+							paragraphPrevious = paragraphStart;
+							paragraphStart = paragraphStart.NextFlateToken;
+						}
+						node = paragraphStart;
+						lastNode = paragraphPrevious;
 						tableFounded = true;
 						break;
 					}
 						lastNode = node;
 						node = node.NextFlateToken;
+						bool isKeyword = lastNode.NodeType == StiRtfNodeType.Keyword;
+						if (isKeyword && (lastNode.NodeKey == "pard")) isPlainParagraph = true;
+						if (isKeyword && (lastNode.NodeKey == "par") && isPlainParagraph)
+						{
+							paragraphStart = node;
+							paragraphPrevious = lastNode;
+						}
 						//and the text after it starts a new band
 						bool isGroupEnd = lastNode.NodeType == StiRtfNodeType.GroupEnd;
 						if (isGroupEnd && IsPageBandGroup(lastNode.ParentNode)) break;

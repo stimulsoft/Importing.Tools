@@ -159,6 +159,20 @@ namespace Stimulsoft.Report.Import
 			public bool LineHeightIsMultiple;
 			}
 
+		private class StiRtfFormatCount
+		{
+			public StiRtfState State;
+			public int Count;
+		}
+
+		//A part of a text with one formatting of its characters.
+		private class StiRtfTextRun
+		{
+			public StiRtfState State;
+			public int Start;
+			public int Length;
+		}
+
 		private class StiRtfPicture
 		{
 			public byte[] Data;
@@ -522,7 +536,8 @@ namespace Stimulsoft.Report.Import
 			state.CodePage = fontData.CodePage;
 			state.FontHasCharset = fontData.HasCharset;
 			//the charset 2 is a font of symbols: Symbol, Wingdings
-			state.SymbolFont = fontData.Charset == 2;
+			//an old file gives the Symbol font without a charset
+			state.SymbolFont = fontData.Charset == 2 || fontData.Name == "Symbol";
 		}
 
 		private static bool IsLeadByte(int codePage, int value)
@@ -652,7 +667,10 @@ namespace Stimulsoft.Report.Import
 			}
 
 			char symbol = state.SymbolFont ? GetSymbol(value) : (char)0;
-			AppendChar(res, symbol != 0 ? symbol : state.Encoding[value], state);
+			//a file of Macintosh keeps the code of the marker in its own code page
+			char encoded = state.Encoding[value];
+			if (state.SymbolFont && symbol == 0 && encoded != value && encoded <= 0xFF) symbol = GetSymbol(encoded);
+			AppendChar(res, symbol != 0 ? symbol : encoded, state);
 		}
 
 		//The text of the document and the keywords of the character formatting,
@@ -988,7 +1006,7 @@ namespace Stimulsoft.Report.Import
 		}
 
 		private void AddTextBand(StiPage page, string pageBand, StringBuilder res, StiRtfState state,
-			ArrayList fontTable, ArrayList colorTable, StiRtfPageData pageData)
+			ArrayList runs, ArrayList fontTable, ArrayList colorTable, StiRtfPageData pageData)
 		{
 			StiBand band = GetContentBand(page, pageBand);
 			//the content of a header or of a footer is stacked in its band
@@ -998,8 +1016,14 @@ namespace Stimulsoft.Report.Import
 			int length = res.Length;
 			if (length >= 2 && res[length - 2] == '\r' && res[length - 1] == '\n') res.Length = length - 2;
 
+			string plainText = res.ToString();
+			state = GetMainState(state, runs, plainText);
+			string html = GetHtmlText(plainText, runs, ref state, fontTable, colorTable);
+			runs.Clear();
+
 			StiText text = new StiText();
-			SetText(text, res.ToString());
+			SetText(text, html ?? plainText);
+			text.AllowHtmlTags = html != null;
 			text.HorAlignment = state.Alignment;
 			res.Length = 0;
 			text.Width = Convert(pageData.SectWidth - pageData.SectMarginLeft - pageData.SectMarginRight);
@@ -1385,6 +1409,202 @@ namespace Stimulsoft.Report.Import
 			}
 		}
 
+		private static bool IsSameCharacterFormat(StiRtfState first, StiRtfState second)
+		{
+			return first.FontNumber == second.FontNumber && first.FontSize == second.FontSize &&
+				first.Bold == second.Bold && first.Italic == second.Italic && first.Underline == second.Underline &&
+				first.FontColor == second.FontColor;
+		}
+
+		//Remembers the formatting of the characters which were added to the text from the given position.
+		private static void AddTextRun(ArrayList runs, StiRtfState state, StringBuilder res, int start)
+		{
+			if (res.Length <= start) return;
+
+			StiRtfTextRun last = runs.Count > 0 ? (StiRtfTextRun)runs[runs.Count - 1] : null;
+			if (last != null && last.Start + last.Length == start && IsSameCharacterFormat(last.State, state))
+			{
+				last.Length = res.Length - last.Start;
+				return;
+			}
+
+			StiRtfTextRun run = new StiRtfTextRun();
+			run.State = state;
+			run.Start = start;
+			run.Length = res.Length - start;
+			runs.Add(run);
+		}
+
+		//The count of the characters of the run which are seen: the formatting of a space means nothing.
+		private static int GetTextLength(string res, StiRtfTextRun run)
+		{
+			int count = 0;
+			int end = Math.Min(res.Length, run.Start + run.Length);
+			for (int index = run.Start; index < end; index++)
+			{
+				if (!char.IsWhiteSpace(res[index])) count++;
+			}
+			return count;
+		}
+
+		//A text component has one font for the whole text. It is the font of the most of its characters, not
+		//of the first one: a paragraph may start with a marker of a list in the Symbol font or with a word
+		//in bold.
+		private static StiRtfState GetMainState(StiRtfState beginState, ArrayList runs, string res)
+		{
+			ArrayList formats = new ArrayList();
+			StiRtfFormatCount main = null;
+			foreach (StiRtfTextRun run in runs)
+			{
+				int count = GetTextLength(res, run);
+				if (count == 0) continue;
+
+				StiRtfFormatCount format = null;
+				foreach (StiRtfFormatCount item in formats)
+				{
+					if (IsSameCharacterFormat(item.State, run.State)) format = item;
+				}
+				if (format == null)
+				{
+					format = new StiRtfFormatCount();
+					format.State = run.State;
+					formats.Add(format);
+				}
+				format.Count += count;
+				if (main == null || format.Count > main.Count) main = format;
+			}
+			if (main == null) return beginState;
+
+			StiRtfState state = beginState;
+			state.FontNumber = main.State.FontNumber;
+			state.AFontNumber = main.State.AFontNumber;
+			state.FontSize = main.State.FontSize;
+			state.Bold = main.State.Bold;
+			state.Italic = main.State.Italic;
+			state.Underline = main.State.Underline;
+			state.FontColor = main.State.FontColor;
+			return state;
+		}
+
+		private static void AppendHtml(StringBuilder html, string res, int start, int end)
+		{
+			for (int index = start; index < end; index++)
+			{
+				char symbol = res[index];
+				switch (symbol)
+				{
+					case '&':
+						html.Append("&amp;");
+						break;
+
+					case '<':
+						html.Append("&lt;");
+						break;
+
+					case '>':
+						html.Append("&gt;");
+						break;
+
+					//the end of a line is a tag: a text with tags does not break the line at the line feed
+					case '\r':
+						break;
+
+					case '\n':
+						html.Append("<br>");
+						break;
+
+					default:
+						html.Append(symbol);
+						break;
+				}
+			}
+		}
+
+		private static string EscapeHtml(string text)
+		{
+			StringBuilder html = new StringBuilder(text.Length);
+			AppendHtml(html, text, 0, text.Length);
+			return html.ToString();
+		}
+
+		//The part of the text in the tags of its own formatting. The font of the component gives the name,
+		//the size and the color of the main formatting, so only the difference is written.
+		private void AppendHtmlRun(StringBuilder html, string res, int start, int end, StiRtfState state,
+			StiRtfState mainState, ArrayList fontTable, ArrayList colorTable)
+		{
+			StiRtfFontData fontData = GetFontData(state, fontTable);
+			StiRtfFontData mainFontData = GetFontData(mainState, fontTable);
+
+			StringBuilder font = new StringBuilder();
+			//a marker in a font of symbols is a sign of Unicode already, it needs the font of the text
+			bool isSymbolFont = fontData.Charset == 2 || fontData.Name == "Symbol";
+			if (fontData.Name != mainFontData.Name && !isSymbolFont && !string.IsNullOrEmpty(fontData.Name))
+			{
+				font.Append(" face=\"").Append(fontData.Name.Replace("\"", string.Empty)).Append("\"");
+			}
+			if (state.FontSize > 0 && state.FontSize != mainState.FontSize)
+			{
+				font.Append(" size=\"").Append(state.FontSize.ToString(CultureInfo.InvariantCulture)).Append("\"");
+			}
+			if (state.FontColor != mainState.FontColor)
+			{
+				Color color = GetColor(colorTable, state.FontColor);
+				font.Append(string.Format(" color=\"#{0:x2}{1:x2}{2:x2}\"", color.R, color.G, color.B));
+			}
+
+			bool bold = state.Bold || fontData.Bold;
+			bool italic = state.Italic || fontData.Italic;
+			if (font.Length > 0) html.Append("<font").Append(font).Append(">");
+			if (bold) html.Append("<b>");
+			if (italic) html.Append("<i>");
+			if (state.Underline) html.Append("<u>");
+			AppendHtml(html, res, start, end);
+			if (state.Underline) html.Append("</u>");
+			if (italic) html.Append("</i>");
+			if (bold) html.Append("</b>");
+			if (font.Length > 0) html.Append("</font>");
+		}
+
+		//A text component has one font, so a text with several ones is written with the tags of HTML.
+		//Returns null for a text with one formatting: it stays a plain text. The main formatting loses its
+		//bold, italic and underline then: a tag can switch them on, but not off.
+		private string GetHtmlText(string res, ArrayList runs, ref StiRtfState mainState,
+			ArrayList fontTable, ArrayList colorTable)
+		{
+			bool isMixed = false;
+			foreach (StiRtfTextRun run in runs)
+			{
+				if (!IsSameCharacterFormat(run.State, mainState) && GetTextLength(res, run) > 0) isMixed = true;
+			}
+			if (!isMixed) return null;
+
+			mainState.Bold = false;
+			mainState.Italic = false;
+			mainState.Underline = false;
+
+			StringBuilder html = new StringBuilder(res.Length + runs.Count * 16);
+			int position = 0;
+			foreach (StiRtfTextRun run in runs)
+			{
+				int start = Math.Max(position, Math.Min(res.Length, run.Start));
+				int end = Math.Max(start, Math.Min(res.Length, run.Start + run.Length));
+				//a text between the runs is an expression of a field
+				AppendHtml(html, res, position, start);
+				//a run of spaces needs no tags; any other one does, the main formatting has no bold now
+				if (GetTextLength(res, run) > 0)
+				{
+					AppendHtmlRun(html, res, start, end, run.State, mainState, fontTable, colorTable);
+				}
+				else
+				{
+					AppendHtml(html, res, start, end);
+				}
+				position = end;
+			}
+			AppendHtml(html, res, position, res.Length);
+			return html.ToString();
+		}
+
 		//The formatting which a text component keeps for the whole text: a paragraph with another one
 		//starts a new component.
 		private static bool IsSameFormat(StiRtfState first, StiRtfState second)
@@ -1395,12 +1615,12 @@ namespace Stimulsoft.Report.Import
 				IsSameParagraphFormat(first, second);
 		}
 
-		//The paragraphs with a space between them are separate components: a text has no such space inside.
+		//The paragraphs with the same margins stay in one text, the space between them is lost: it is more
+		//important to keep them together.
 		private static bool IsSameParagraphFormat(StiRtfState first, StiRtfState second)
 		{
-			if (first.SpaceAfter != second.SpaceAfter || first.SpaceAfter + second.SpaceBefore > 0) return false;
-
-			return first.LeftIndent == second.LeftIndent && first.RightIndent == second.RightIndent &&
+			return first.SpaceBefore == second.SpaceBefore && first.SpaceAfter == second.SpaceAfter &&
+				first.LeftIndent == second.LeftIndent && first.RightIndent == second.RightIndent &&
 				first.FirstIndent == second.FirstIndent && first.LineHeight == second.LineHeight &&
 				first.LineHeightIsMultiple == second.LineHeightIsMultiple;
 		}
@@ -1552,6 +1772,14 @@ namespace Stimulsoft.Report.Import
 			if (!string.IsNullOrEmpty(text))
 			{
 				string firstText = firstCell.Content.Text.Value;
+				//a plain text which is joined to a text with tags gets the same notation
+				bool isHtml = cell.Content.AllowHtmlTags || firstCell.Content.AllowHtmlTags;
+				if (isHtml && !cell.Content.AllowHtmlTags) text = EscapeHtml(text);
+				if (isHtml && !firstCell.Content.AllowHtmlTags && !string.IsNullOrEmpty(firstText))
+				{
+					firstText = EscapeHtml(firstText);
+				}
+				firstCell.Content.AllowHtmlTags = isHtml;
 				if (string.IsNullOrEmpty(firstText))
 				{
 					firstCell.Content.Text = text;
@@ -1792,6 +2020,10 @@ namespace Stimulsoft.Report.Import
                             {
                                 mainCodePage = currentNode.Parameter;
                             }
+                            //the character set of the document: Macintosh, IBM PC, IBM PC of Western Europe
+                            if (currentNode.NodeKey == "mac") mainCodePage = 10000;
+                            if (currentNode.NodeKey == "pc") mainCodePage = 437;
+                            if (currentNode.NodeKey == "pca") mainCodePage = 850;
                             if (currentNode.NodeKey == "deff")
                             {
                                 defaultFontNumber = currentNode.Parameter;
@@ -1860,6 +2092,8 @@ namespace Stimulsoft.Report.Import
                 currentState.FontNumber = defaultFontNumber;
                 currentState.FontSize = defaultFontSize;
                 int skipGroupCount = 0;
+                //the cells of the last row: a row without a definition takes them even after a text
+                ArrayList lastRowCells = null;
                 #endregion
 
                 #region parse text
@@ -1872,6 +2106,7 @@ namespace Stimulsoft.Report.Import
                         #region plain text
                         bool paragraphEnded = false;
                         StringBuilder res = new StringBuilder();
+                        ArrayList formats = new ArrayList();
                         bool endLoop = false;
                         while (!endLoop)
                         {
@@ -1941,7 +2176,7 @@ namespace Stimulsoft.Report.Import
                                     //the picture stands in the text: the text before it gets its own band
                                     if (res.Length > 0)
                                     {
-                                        AddTextBand(currentPage, data.pageBand, res, beginState,
+                                        AddTextBand(currentPage, data.pageBand, res, beginState, formats,
                                             fontTable, colorTable, pageData);
                                     }
                                     AddImageBand(currentPage, data.pageBand, picture, pageData);
@@ -2066,12 +2301,15 @@ namespace Stimulsoft.Report.Import
                                     paragraphEnded = false;
                                     if (res.Length > 0 && !IsSameFormat(beginState, currentState))
                                     {
-                                        AddTextBand(currentPage, data.pageBand, res, beginState,
+                                        AddTextBand(currentPage, data.pageBand, res, beginState, formats,
                                             fontTable, colorTable, pageData);
                                         beginState = currentState;
                                     }
                                 }
+                                int textLength = res.Length;
+                                StiRtfState textState = currentState;
                                 ProcessTextToken(node, res, ref currentState, fontTable);
+                                AddTextRun(formats, textState, res, textLength);
                             }
                             if (node == data.end) endLoop = true;
                             node = node.NextFlateToken;
@@ -2079,7 +2317,8 @@ namespace Stimulsoft.Report.Import
                         }
                         if (res.Length > 0)
                         {
-                            AddTextBand(currentPage, data.pageBand, res, beginState, fontTable, colorTable, pageData);
+                            AddTextBand(currentPage, data.pageBand, res, beginState, formats,
+                                fontTable, colorTable, pageData);
                         }
 
                         #endregion
@@ -2087,7 +2326,7 @@ namespace Stimulsoft.Report.Import
                     else
                     {
                         #region table rows
-                        ArrayList previousCells = null;
+                        ArrayList previousCells = data.isIntbl ? lastRowCells : null;
                         //the count of the leading rows of the table which are repeated on every page
                         int headerLines = 0;
                         bool headerRow = false;
@@ -2120,6 +2359,7 @@ namespace Stimulsoft.Report.Import
                                     //the row takes the definition of the previous row, not its text
                                     StiRtfCell previousCell = ((StiRtfCell)previousCells[indexComp]).Clone();
                                     previousCell.Content.Text = string.Empty;
+                                    previousCell.Content.AllowHtmlTags = false;
                                     previousCell.Pictures = null;
                                     cells.Add(previousCell);
                                 }
@@ -2128,6 +2368,7 @@ namespace Stimulsoft.Report.Import
                             int cellIndex = 0;
                             double posX = 0;
                             StringBuilder res = new StringBuilder();
+                            ArrayList formats = new ArrayList();
                             bool endLoop = false;
                             //a row without its own definition takes the cells of the previous row,
                             //its content starts at once
@@ -2237,7 +2478,10 @@ namespace Stimulsoft.Report.Import
 
                                 if (skipGroupCount == 0)
                                 {
+                                    int textLength = res.Length;
+                                    StiRtfState textState = currentState;
                                     ProcessTextToken(node, res, ref currentState, fontTable);
+                                    AddTextRun(formats, textState, res, textLength);
                                     bool isRowKeyword = node.NodeType == StiRtfNodeType.Keyword && nestedLevel == 0;
                                     if (isRowKeyword)
                                     {
@@ -2422,6 +2666,7 @@ namespace Stimulsoft.Report.Import
                                                     StiText content = ((StiRtfCell)pendingCells[cells.Count]).Content;
                                                     currentCell.Content.Text = content.Text;
                                                     currentCell.Content.OnlyText = content.OnlyText;
+                                                    currentCell.Content.AllowHtmlTags = content.AllowHtmlTags;
                                                     currentCell.Content.Font = content.Font;
                                                     currentCell.Content.TextBrush = content.TextBrush;
                                                     currentCell.Content.HorAlignment = content.HorAlignment;
@@ -2471,7 +2716,13 @@ namespace Stimulsoft.Report.Import
 
                                             case "cell":
                                                 cellClosed = true;
-                                                SetText(currentCell.Content, res.ToString());
+                                                string plainText = res.ToString();
+                                                beginState = GetMainState(beginState, formats, plainText);
+                                                string html = GetHtmlText(plainText, formats, ref beginState,
+                                                    fontTable, colorTable);
+                                                formats.Clear();
+                                                SetText(currentCell.Content, html ?? plainText);
+                                                currentCell.Content.AllowHtmlTags = html != null;
                                                 FontStyle fs = FontStyle.Regular;
                                                 if (beginState.Bold) fs |= FontStyle.Bold;
                                                 if (beginState.Italic) fs |= FontStyle.Italic;
@@ -2522,6 +2773,7 @@ namespace Stimulsoft.Report.Import
                             indexBand++;
                         }
                         indexBand--;
+                        if (previousCells != null) lastRowCells = previousCells;
                         #endregion
 
                         #region create new band
