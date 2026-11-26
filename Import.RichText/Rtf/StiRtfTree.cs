@@ -53,6 +53,8 @@ namespace Stimulsoft.Report.Import
 			public StiRtfTreeNode end = null;
 			public bool isTableRow = false;
 			public bool isIntbl = false;
+			//the keyword of the header or footer group which holds the band ("header", "footerr"), null for the body
+			public string pageBand = null;
         }
         #endregion
 
@@ -287,6 +289,62 @@ namespace Stimulsoft.Report.Import
         #endregion
 
         #region Methods.GetBandsData
+        //The starred group "nesttableprops" is the definition of a row of a nested table.
+        internal static bool IsNestedRowDefinition(StiRtfTreeNode group)
+        {
+            if (group.NodeType != StiRtfNodeType.Group || group.ChildNodes.Count < 2) return false;
+
+            StiRtfTreeNode first = group.ChildNodes[0];
+            StiRtfTreeNode second = group.ChildNodes[1];
+            return first.NodeType == StiRtfNodeType.Control && first.NodeKey == "*" &&
+                second.NodeType == StiRtfNodeType.Keyword && second.NodeKey == "nesttableprops";
+        }
+
+        //The group of a header or of a footer of the page, with all their kinds: for the left, right and first pages.
+        private static bool IsPageBandGroup(StiRtfTreeNode group)
+        {
+            if (group == null || group.NodeType != StiRtfNodeType.Group) return false;
+
+            StiRtfTreeNode first = group.ChildNodes[0];
+            if (first.NodeType != StiRtfNodeType.Keyword) return false;
+
+            switch (first.NodeKey)
+            {
+                case "header":
+                case "headerl":
+                case "headerr":
+                case "headerf":
+                case "footer":
+                case "footerl":
+                case "footerr":
+                case "footerf":
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        private static string GetPageBand(StiRtfTreeNode node)
+        {
+            while (node != null)
+            {
+                if (IsPageBandGroup(node)) return node.ChildNodes[0].NodeKey;
+                node = node.ParentNode;
+            }
+            return null;
+        }
+
+        private static bool IsInNestedRowDefinition(StiRtfTreeNode node)
+        {
+            StiRtfTreeNode parent = node.ParentNode;
+            while (parent != null)
+            {
+                if (IsNestedRowDefinition(parent)) return true;
+                parent = parent.ParentNode;
+            }
+            return false;
+        }
         private static bool IsHeaderGroup(StiRtfTreeNode group)
         {
             StiRtfTreeNode node = group.ChildNodes[0];
@@ -363,9 +421,13 @@ namespace Stimulsoft.Report.Import
 
 				while ((node != null) && (node != lastRootNode))
 				{
+					//a header or a footer is a band of its own: the text before it ends here
+					if (IsPageBandGroup(node) && (node != data.start)) break;
 					if ((node.NodeType == StiRtfNodeType.Keyword) && (node.NodeKey == "page") && (node != data.start)) break;
 					if ((node.NodeType == StiRtfNodeType.Keyword) && (node.NodeKey == "sect") && (node != data.start)) break;
-					if ((node.NodeType == StiRtfNodeType.Keyword) && (node.NodeKey == "trowd"))
+					//the "trowd" of a nested table stands inside a row of the outer table and doesn't start a new one
+					if ((node.NodeType == StiRtfNodeType.Keyword) && (node.NodeKey == "trowd") &&
+						!IsInNestedRowDefinition(node))
 					{
 						tableFounded = true;
 						break;
@@ -376,14 +438,18 @@ namespace Stimulsoft.Report.Import
 						tableFounded = true;
 						break;
 					}
-					lastNode = node;
-					node = node.NextFlateToken;
+						lastNode = node;
+						node = node.NextFlateToken;
+						//and the text after it starts a new band
+						bool isGroupEnd = lastNode.NodeType == StiRtfNodeType.GroupEnd;
+						if (isGroupEnd && IsPageBandGroup(lastNode.ParentNode)) break;
 				}
 				if (node != data.start)
 				{
-					data.end = lastNode;
-					data.isTableRow = false;
-					bandsList.Add(data);
+						data.end = lastNode;
+						data.isTableRow = false;
+						data.pageBand = GetPageBand(lastNode);
+						bandsList.Add(data);
 				}
 
 				if ((tableFounded) && (node != null) && (node != lastRootNode))
@@ -402,8 +468,9 @@ namespace Stimulsoft.Report.Import
 
 					while ((node != null) && (node != lastRootNode))
 					{
-						if ((node.NodeType == StiRtfNodeType.Keyword) && (node.NodeKey == "row")) 
+						if ((node.NodeType == StiRtfNodeType.Keyword) && (node.NodeKey == "row"))
 						{
+							data.pageBand = GetPageBand(node);
 							node = node.NextFlateToken;
 							break;
 						}
@@ -411,7 +478,8 @@ namespace Stimulsoft.Report.Import
 						lastNode = node;
 						node = node.NextFlateToken;
 					}
-					while ((node != null)&& (node != lastRootNode) && ((node.NodeType == StiRtfNodeType.Group) || (node.NodeType == StiRtfNodeType.GroupEnd)))
+					while ((node != null) && (node != lastRootNode) && !IsPageBandGroup(node) &&
+						((node.NodeType == StiRtfNodeType.Group) || (node.NodeType == StiRtfNodeType.GroupEnd)))
 					{
 						lastNode = node;
 						node = node.NextFlateToken;

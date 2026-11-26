@@ -67,6 +67,15 @@ namespace Stimulsoft.Report.Import
         private int fallbackCount;
         //the first byte of a double byte character which waits for the second one
         private int leadByte = -1;
+        //the depth of the groups inside the definition of a row of a nested table, 0 outside of it
+        private int nestedLevel;
+        //the text which is collected now has an expression of the report: the number of the page
+        private bool textHasExpression;
+        //the last field gave an expression, its result (the text which the document shows) is skipped
+        private bool skipFieldResult;
+        //the bands of the headers and of the footers by their pages
+        private Hashtable pageHeaders = new Hashtable();
+        private Hashtable pageFooters = new Hashtable();
         private StiRtfFontData defaultFontData = new StiRtfFontData { Name = defaultFontName };
         #endregion
 
@@ -113,6 +122,12 @@ namespace Stimulsoft.Report.Import
 			public int UnicodeSkip;
 			public bool Hidden;
 			}
+
+		private class StiRtfPageBand
+		{
+			public StiBand Band;
+			public string Key;
+		}
 
 		private class StiRtfFontData
 		{
@@ -352,28 +367,38 @@ namespace Stimulsoft.Report.Import
 			}
 		}
 
-		private static bool IsSkippedDestination(string key)
+		private bool IsSkippedDestination(string key)
 		{
+			if (key == "fldrslt" && skipFieldResult)
+			{
+				skipFieldResult = false;
+				return true;
+			}
 			switch (key)
 			{
 				case "object":
 				case "nonshppict":
 				case "pict":
-				//the headers, the footers and the footnotes are not a part of the body
-				case "header":
-				case "headerl":
-				case "headerr":
-				case "headerf":
-				case "footer":
-				case "footerl":
-				case "footerr":
-				case "footerf":
+				//a footnote is not a part of the body
 				case "footnote":
+				//the copy of a nested table for the readers which don't know them
+				case "nonesttables":
 					return true;
 
 				default:
 					return StiRtfTree.TokensHash.ContainsKey(key) && (int)StiRtfTree.TokensHash[key] == 0;
 			}
+		}
+
+		//A nested table is kept as the text of its cell: a tab between the cells, a new line after a row.
+		private static void AppendNestedRowEnd(StringBuilder res, StiRtfState state)
+		{
+			if (state.Hidden) return;
+
+			if (res.Length > 0 && res[res.Length - 1] == '\t') res.Length--;
+			//the end of the row can come twice: as "nestrow" and as the end of its group
+			if (res.Length > 0 && res[res.Length - 1] == '\n') return;
+			res.Append("\r\n");
 		}
 
 		private static void AppendChar(StringBuilder res, char value, StiRtfState state)
@@ -510,7 +535,30 @@ namespace Stimulsoft.Report.Import
 					if (!state.Hidden) res.Append("\n");
 					break;
 				case "tab":
+				case "nestcell":
 					if (!state.Hidden) res.Append("\t");
+					break;
+
+				case "nestrow":
+					AppendNestedRowEnd(res, state);
+					break;
+
+				case "field":
+					//a field in the middle of a group; a field at the start of a group is read with the group
+					string expression = GetFieldExpression(node);
+					skipFieldResult = expression != null;
+					if (expression != null && !state.Hidden)
+					{
+						res.Append(expression);
+						textHasExpression = true;
+					}
+					break;
+				case "chpgn":
+					if (!state.Hidden)
+					{
+						res.Append("{PageNumber}");
+						textHasExpression = true;
+					}
 					break;
 
 				case "uc":
@@ -550,7 +598,164 @@ namespace Stimulsoft.Report.Import
 			}
 		}
 
-		private static void SetText(StiText text, string value)
+		//A document can have several headers: for all the pages, for the right, the left and the first ones.
+		//A page of the report has one, the most common kind wins.
+		private static int GetPageBandPriority(string key)
+		{
+			switch (key)
+			{
+				case "header":
+				case "footer":
+					return 4;
+
+				case "headerr":
+				case "footerr":
+					return 3;
+
+				case "headerl":
+				case "footerl":
+					return 2;
+
+				default:
+					return 1;
+			}
+		}
+
+		private StiBand AddPageBand(StiPage page, bool isHeader)
+		{
+			StiBand band;
+			if (isHeader)
+			{
+				band = new StiPageHeaderBand();
+				band.Name = string.Format("PageHeaderBand{0}", bandsCounter++);
+				page.Components.Insert(0, band);
+			}
+			else
+			{
+				band = new StiPageFooterBand();
+				band.Name = string.Format("PageFooterBand{0}", bandsCounter++);
+				page.Components.Add(band);
+			}
+			band.Height = 0;
+			band.Page = page;
+			return band;
+		}
+
+		//Returns the band for the content of a header or a footer, null when the page has a better kind of it.
+		private StiBand GetPageBand(StiPage page, string key)
+		{
+			bool isHeader = key.StartsWith("header", StringComparison.Ordinal);
+			Hashtable bands = isHeader ? pageHeaders : pageFooters;
+			StiRtfPageBand pageBand = (StiRtfPageBand)bands[page];
+
+			if (pageBand != null && pageBand.Key != key)
+			{
+				if (GetPageBandPriority(pageBand.Key) >= GetPageBandPriority(key)) return null;
+
+				page.Components.Remove(pageBand.Band);
+				pageBand = null;
+			}
+
+			if (pageBand == null)
+			{
+				pageBand = new StiRtfPageBand();
+				pageBand.Key = key;
+				pageBand.Band = AddPageBand(page, isHeader);
+				bands[page] = pageBand;
+			}
+			return pageBand.Band;
+		}
+
+		//The band which takes the next text or table: a new data band of the body,
+		//or the header or footer of the page.
+		private StiBand GetContentBand(StiPage page, string pageBandKey, int indexBand)
+		{
+			StiDataBand band = new StiDataBand();
+			if (pageBandKey != null)
+			{
+				//the band of a dropped kind of header stays out of the page
+				StiBand pageBand = GetPageBand(page, pageBandKey);
+				return pageBand != null ? pageBand : band;
+			}
+
+			band.Name = string.Format("DataBand{0}", bandsCounter++);
+			band.CountData = 1;
+			band.Top = defaultTextBoxHeight * 2 * indexBand;
+			band.CanBreak = true;
+			page.Components.Add(band);
+			return band;
+		}
+
+		//A page without its own header or footer takes them from the previous page: the header of a section
+		//works for all its pages and for the next sections.
+		private void InheritPageBand(Hashtable bands, StiPage previousPage, StiPage page, bool isHeader)
+		{
+			if (previousPage == null || bands[page] != null) return;
+
+			StiRtfPageBand previous = (StiRtfPageBand)bands[previousPage];
+			if (previous == null) return;
+
+			StiRtfPageBand pageBand = new StiRtfPageBand();
+			pageBand.Key = previous.Key;
+			pageBand.Band = AddPageBand(page, isHeader);
+			pageBand.Band.Height = previous.Band.Height;
+			foreach (StiComponent component in previous.Band.Components)
+			{
+				StiComponent clone = (StiComponent)component.Clone();
+				//the copy gets its own name when it is added to the band
+				clone.Name = string.Empty;
+				clone.Page = page;
+				clone.Parent = pageBand.Band;
+				pageBand.Band.Components.Add(clone);
+			}
+			bands[page] = pageBand;
+		}
+
+		private static bool IsSameTable(ArrayList bandsList, int index, string pageBand)
+		{
+			if (index >= bandsList.Count) return false;
+
+			StiRtfTree.StiRtfBandData data = (StiRtfTree.StiRtfBandData)bandsList[index];
+			return data.isTableRow && data.pageBand == pageBand;
+		}
+
+		//The fields with the number of the page become the system variables of the report.
+		private static string GetFieldExpression(StiRtfTreeNode fieldNode)
+		{
+			StringBuilder instruction = new StringBuilder();
+			StiRtfTreeNode node = fieldNode.NextToken;
+			while (node != null && node.NodeType != StiRtfNodeType.GroupEnd)
+			{
+				if (node.NodeType == StiRtfNodeType.Group && node.ChildNodes.Count > 1 &&
+					node.ChildNodes[1].NodeType == StiRtfNodeType.Keyword && node.ChildNodes[1].NodeKey == "fldinst")
+				{
+					StiRtfTreeNode last = node.LastChild;
+					StiRtfTreeNode item = node.NextFlateToken;
+					while (item != null && item != last)
+					{
+						if (item.NodeType == StiRtfNodeType.Text) instruction.Append(item.NodeKey);
+						item = item.NextFlateToken;
+					}
+				}
+				node = node.NextToken;
+			}
+
+			string[] words = instruction.ToString().Trim().Split(' ');
+			switch (words[0].ToUpperInvariant())
+			{
+				case "PAGE":
+					return "{PageNumber}";
+
+				case "NUMPAGES":
+				case "SECTIONPAGES":
+					return "{TotalPageCount}";
+
+				default:
+					return null;
+			}
+		}
+
+		private void SetText(StiText text, string value)
 		{
 			StringBuilder clean = new StringBuilder(value.Length);
 			for (int index = 0; index < value.Length; index++)
@@ -574,8 +779,10 @@ namespace Stimulsoft.Report.Import
 			}
 			text.Text = clean.ToString();
 
-			//a brace of the document is a text, not an expression of the report
-			if (value.IndexOf('{') >= 0) text.OnlyText = true;
+			//a brace of the document is a text, not an expression of the report;
+			//a text with the number of the page keeps its expression
+			if (value.IndexOf('{') >= 0 && !textHasExpression) text.OnlyText = true;
+			textHasExpression = false;
 		}
 
 		private void UpdatePage(StiPage page, StiRtfPageData pageData)
@@ -639,6 +846,11 @@ namespace Stimulsoft.Report.Import
                 defaultFontNumber = 0;
                 fallbackCount = 0;
                 leadByte = -1;
+                nestedLevel = 0;
+                textHasExpression = false;
+                skipFieldResult = false;
+                pageHeaders.Clear();
+                pageFooters.Clear();
                 StiRtfNodeCollection main = tree.rootNode.ChildNodes[0].ChildNodes;
                 int pos = 0;
                 //bool afterGroup = false;
@@ -791,9 +1003,20 @@ namespace Stimulsoft.Report.Import
                             {
                                 bool needSkipGroup = false;
                                 StiRtfTreeNode nextNode = node.NextFlateToken;
+                                if (nestedLevel > 0) nestedLevel++;
                                 if ((nextNode.NodeType == StiRtfNodeType.Control) && (nextNode.NodeKey == "*"))
                                 {
-                                    needSkipGroup = true;
+                                    //the definition of a nested row ends the row; some writers
+                                    //put the text of its cells inside, so it is read, not skipped
+                                    bool nestedRow = StiRtfTree.IsNestedRowDefinition(node);
+                                    if (nestedRow && nestedLevel == 0 && skipGroupCount == 0)
+                                    {
+                                        nestedLevel = 1;
+                                    }
+                                    else if (nestedLevel == 0)
+                                    {
+                                        needSkipGroup = true;
+                                    }
                                 }
                                 else
                                 {
@@ -802,9 +1025,16 @@ namespace Stimulsoft.Report.Import
                                         if (nextNode.NodeKey == "field")
                                         {
                                             #region keyword "field"
+                                            string fieldExpression = null;
+                                            if (skipGroupCount == 0) fieldExpression = GetFieldExpression(nextNode);
+                                            skipFieldResult = false;
                                             while (nextNode.NodeType != StiRtfNodeType.GroupEnd)
                                             {
-                                                if ((nextNode.NodeType == StiRtfNodeType.Group) && (nextNode.NextFlateToken.NodeKey == "fldrslt"))
+                                                bool isResult = (nextNode.NodeType == StiRtfNodeType.Group) &&
+                                                    (nextNode.NextFlateToken.NodeKey == "fldrslt");
+                                                //the result of the field is its text;
+                                                //a known field gives an expression instead
+                                                if (isResult && fieldExpression == null)
                                                 {
                                                     nextNode = nextNode.NextToken;
                                                 }
@@ -814,6 +1044,11 @@ namespace Stimulsoft.Report.Import
                                                     nextNode = nextNode.NextToken;
                                                     tempNode.RemoveThisToken();
                                                 }
+                                            }
+                                            if (fieldExpression != null && !currentState.Hidden)
+                                            {
+                                                res.Append(fieldExpression);
+                                                textHasExpression = true;
                                             }
                                             #endregion
                                         }
@@ -833,6 +1068,11 @@ namespace Stimulsoft.Report.Import
                             {
                                 if (states.Count > 0) currentState = (StiRtfState)states.Pop();
                                 if (skipGroupCount > 0) skipGroupCount--;
+                                if (nestedLevel > 0)
+                                {
+                                    nestedLevel--;
+                                    if (nestedLevel == 0) AppendNestedRowEnd(res, currentState);
+                                }
                             }
 
                             if (skipGroupCount == 0)
@@ -936,13 +1176,9 @@ namespace Stimulsoft.Report.Import
                         }
                         if (res.Length > 0)
                         {
-                            StiDataBand band = new StiDataBand();
-                            band.Name = string.Format("DataBand{0}", bandsCounter++);
-                            band.Height = defaultTextBoxHeight;
-                            band.CountData = 1;
-                            band.Top = defaultTextBoxHeight * 2 * indexBand;
-                            band.CanBreak = true;
-                            currentPage.Components.Add(band);
+                            StiBand band = GetContentBand(currentPage, data.pageBand, indexBand);
+                            //the content of a header or of a footer is stacked in its band
+                            double bandTop = band is StiDataBand ? 0 : band.Height;
 
                             StiText text = new StiText();
                             SetText(text, res.ToString());
@@ -964,8 +1200,9 @@ namespace Stimulsoft.Report.Import
                             SizeD textSize = text.GetActualSize();
                             if (textSize.Height > text.Height) text.Height = textSize.Height;
                             text.CanBreak = true;
+                            text.Top = bandTop;
                             band.Components.Add(text);
-                            band.Height = text.Height;
+                            band.Height = bandTop + text.Height;
                         }
 
                         #endregion
@@ -974,11 +1211,13 @@ namespace Stimulsoft.Report.Import
                     {
                         #region table rows
                         ArrayList previousCells = null;
+                        //a table of a header doesn't join a table of the body which follows it
+                        string tablePageBand = data.pageBand;
                         ArrayList table = new ArrayList();
                         ArrayList mergedCells = null;
 
                         #region scan table row
-                        while ((indexBand < bandsList.Count) && (((StiRtfTree.StiRtfBandData)bandsList[indexBand]).isTableRow))
+                        while (IsSameTable(bandsList, indexBand, tablePageBand))
                         {
                             data = (StiRtfTree.StiRtfBandData)bandsList[indexBand];
                             node = data.start;
@@ -1009,11 +1248,14 @@ namespace Stimulsoft.Report.Import
                             double posX = 0;
                             StringBuilder res = new StringBuilder();
                             bool endLoop = false;
-                            bool skipLoop = false;
                             //a row without its own definition takes the cells of the previous row,
                             //its content starts at once
                             bool cellContentPresent = cells.Count > 0;
                             bool cellClosed = false;
+                            //true inside a definition which stands in the row after its own one:
+                            //a copy of the definition of this row, or the definition of a nested
+                            //table. It is skipped up to its last "cellx"
+                            bool ignoredDefinition = false;
                             //the cells which got their content before the definition of the row (SAS writes so)
                             ArrayList pendingCells = new ArrayList();
                             StiBorderSides borderSide = StiBorderSides.None;
@@ -1025,9 +1267,20 @@ namespace Stimulsoft.Report.Import
                                 {
                                     bool needSkipGroup = false;
                                     StiRtfTreeNode nextNode = node.NextFlateToken;
+                                    if (nestedLevel > 0) nestedLevel++;
                                     if ((nextNode.NodeType == StiRtfNodeType.Control) && (nextNode.NodeKey == "*"))
                                     {
-                                        needSkipGroup = true;
+                                        //the definition of a nested row ends the row; some writers
+                                        //put the text of its cells inside, so it is read, not skipped
+                                        bool nestedRow = StiRtfTree.IsNestedRowDefinition(node);
+                                        if (nestedRow && nestedLevel == 0 && skipGroupCount == 0)
+                                        {
+                                            nestedLevel = 1;
+                                        }
+                                        else if (nestedLevel == 0)
+                                        {
+                                            needSkipGroup = true;
+                                        }
                                     }
                                     else
                                     {
@@ -1036,9 +1289,16 @@ namespace Stimulsoft.Report.Import
                                             if (nextNode.NodeKey == "field")
                                             {
                                                 #region keyword "field"
+                                                string fieldExpression = null;
+                                                if (skipGroupCount == 0) fieldExpression = GetFieldExpression(nextNode);
+                                                skipFieldResult = false;
                                                 while (nextNode.NodeType != StiRtfNodeType.GroupEnd)
                                                 {
-                                                    if ((nextNode.NodeType == StiRtfNodeType.Group) && (nextNode.NextFlateToken.NodeKey == "fldrslt"))
+                                                    bool isResult = (nextNode.NodeType == StiRtfNodeType.Group) &&
+                                                        (nextNode.NextFlateToken.NodeKey == "fldrslt");
+                                                    //the result of the field is its text;
+                                                    //a known field gives an expression instead
+                                                    if (isResult && fieldExpression == null)
                                                     {
                                                         nextNode = nextNode.NextToken;
                                                     }
@@ -1048,6 +1308,11 @@ namespace Stimulsoft.Report.Import
                                                         nextNode = nextNode.NextToken;
                                                         tempNode.RemoveThisToken();
                                                     }
+                                                }
+                                                if (fieldExpression != null && !currentState.Hidden)
+                                                {
+                                                    res.Append(fieldExpression);
+                                                    textHasExpression = true;
                                                 }
                                                 #endregion
                                             }
@@ -1067,24 +1332,40 @@ namespace Stimulsoft.Report.Import
                                 {
                                     if (states.Count > 0) currentState = (StiRtfState)states.Pop();
                                     if (skipGroupCount > 0) skipGroupCount--;
+                                    if (nestedLevel > 0)
+                                    {
+                                        nestedLevel--;
+                                        if (nestedLevel == 0) AppendNestedRowEnd(res, currentState);
+                                    }
                                 }
 
-                                if ((!skipLoop) && (skipGroupCount == 0))
+                                if (skipGroupCount == 0)
                                 {
                                     ProcessTextToken(node, res, ref currentState, fontTable);
-                                    if (node.NodeType == StiRtfNodeType.Keyword)
+                                    bool isRowKeyword = node.NodeType == StiRtfNodeType.Keyword && nestedLevel == 0;
+                                    if (isRowKeyword)
+                                    {
+                                        if (node.NodeKey == "trowd" && node != data.start && cells.Count > 0)
+                                        {
+                                            ignoredDefinition = true;
+                                        }
+                                        isRowKeyword = !ignoredDefinition;
+                                        if (ignoredDefinition && node.NodeKey == "cellx")
+                                        {
+                                            ignoredDefinition = HasCellDefinitionAhead(node, data.end);
+                                        }
+                                    }
+
+                                    //the keywords of a nested definition belong to the nested table, not to this row
+                                    if (isRowKeyword)
                                     {
                                         switch (node.NodeKey)
                                         {
                                             #region //tbldef
                                             case "trowd":
-                                                //the second definition repeats the first one; it is read
-                                                //only when the content of the row had no definition
-                                                if (node != data.start && (cells.Count > 0 || pendingCells.Count == 0))
-                                                {
-                                                    skipLoop = true;
-                                                    break;
-                                                }
+                                                //a definition in the middle of the row is read only when the row
+                                                //had none yet: the content of a row, or a nested table at its
+                                                //start, can stand before the definition
                                                 cells = new ArrayList();
                                                 currentCell = new StiRtfCell();
                                                 cellIndex = 0;
@@ -1277,13 +1558,9 @@ namespace Stimulsoft.Report.Import
                         #endregion
 
                         #region create new band
-                        StiDataBand band = new StiDataBand();
-                        band.Name = string.Format("DataBand{0}", bandsCounter++);
-                        band.CountData = 1;
-                        band.Top = defaultTextBoxHeight * 2 * indexBand;
-                        band.Brush = new StiSolidBrush(Color.FromArgb(32, Color.Green));
-                        band.CanBreak = true;
-                        currentPage.Components.Add(band);
+                        StiBand band = GetContentBand(currentPage, tablePageBand, indexBand);
+                        if (band is StiDataBand) band.Brush = new StiSolidBrush(Color.FromArgb(32, Color.Green));
+                        double bandTop = band is StiDataBand ? 0 : band.Height;
                         #endregion
 
                         #region recalculate cells height
@@ -1332,7 +1609,7 @@ namespace Stimulsoft.Report.Import
                         #endregion
 
                         #region add components to band
-                        double cellPosY = 0;
+                        double cellPosY = bandTop;
                         for (int indexLine = 0; indexLine < table.Count; indexLine++)
                         {
                             double cellPosX = 0;
@@ -1377,8 +1654,12 @@ namespace Stimulsoft.Report.Import
                 }
 
                 int pagesCounter = 1;
+                StiPage previousPage = null;
                 foreach (StiPage page in report.Pages)
                 {
+                    InheritPageBand(pageHeaders, previousPage, page, true);
+                    InheritPageBand(pageFooters, previousPage, page, false);
+                    previousPage = page;
                     //page.LargeHeight = true;
                     //page.LargeHeightFactor = 2;
                     page.Name = string.Format("Page{0}", pagesCounter++);
