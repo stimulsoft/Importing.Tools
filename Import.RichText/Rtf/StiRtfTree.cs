@@ -287,6 +287,14 @@ namespace Stimulsoft.Report.Import
         #endregion
 
         #region Methods.GetBandsData
+        private static bool IsHeaderGroup(StiRtfTreeNode group)
+        {
+            StiRtfTreeNode node = group.ChildNodes[0];
+            if (node.NodeType == StiRtfNodeType.Control) return node.NodeKey == "*";
+
+            return node.NodeType == StiRtfNodeType.Keyword &&
+                TokensHash.ContainsKey(node.NodeKey) && (int)TokensHash[node.NodeKey] == 0;
+        }
         public ArrayList GetBandsData()
 		{
 			StiRtfNodeCollection main = rootNode.ChildNodes[0].ChildNodes;
@@ -306,6 +314,8 @@ namespace Stimulsoft.Report.Import
             {
                 if (main[pos].NodeType == StiRtfNodeType.Group)
                 {
+                    //a group with the text of the document ends the header
+                    if (!IsHeaderGroup(main[pos])) break;
                     pos++;
                 }
                 else
@@ -326,10 +336,7 @@ namespace Stimulsoft.Report.Import
                     //check for header or info
                     if (pos2 < main.Count)
                     {
-                        StiRtfTreeNode tempNode = main[pos2].ChildNodes[0];
-                        if (((tempNode.NodeType == StiRtfNodeType.Keyword) &&
-                            (TokensHash.ContainsKey(tempNode.NodeKey) && (int)TokensHash[tempNode.NodeKey] == 0)) ||
-                            ((tempNode.NodeType == StiRtfNodeType.Control) && (tempNode.NodeKey == "*")))
+                        if (IsHeaderGroup(main[pos2]))
                         {
                             pos = pos2;
                             pos++;

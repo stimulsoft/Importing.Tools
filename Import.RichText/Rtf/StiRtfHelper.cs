@@ -62,6 +62,11 @@ namespace Stimulsoft.Report.Import
 		private Hashtable codepageToEncodingTables = null;
 
         private int bandsCounter = 0;
+        private int defaultFontNumber;
+        //the count of the characters after "\u" which repeat it for the old readers and are skipped
+        private int fallbackCount;
+        //the first byte of a double byte character which waits for the second one
+        private int leadByte = -1;
         private StiRtfFontData defaultFontData = new StiRtfFontData { Name = defaultFontName };
         #endregion
 
@@ -103,7 +108,11 @@ namespace Stimulsoft.Report.Import
 			public bool Underline;
 			public int FontColor;
 			public char[] Encoding;
-		}
+			public int CodePage;
+			public bool FontHasCharset;
+			public int UnicodeSkip;
+			public bool Hidden;
+			}
 
 		private class StiRtfFontData
 		{
@@ -111,7 +120,9 @@ namespace Stimulsoft.Report.Import
 			public int Charset;
 			public string Name;
 			public char[] Encoding;
-		}
+			public int CodePage;
+			public bool HasCharset;
+			}
 
 		private class StiRtfPageData
 		{
@@ -235,8 +246,13 @@ namespace Stimulsoft.Report.Import
                 int codePage = mainCodePage;
                 for (int index = 0; index < codePagesTableSize; index++)
                 {
-                    if (codePagesTable[index, 2] == fontData.Charset) codePage = codePagesTable[index, 1];
+                    if (codePagesTable[index, 2] != fontData.Charset) continue;
+
+                    codePage = codePagesTable[index, 1];
+                    //the charsets 0 and 1 are "ANSI" and "default": they don't name a code page
+                    fontData.HasCharset = fontData.Charset > 1;
                 }
+                fontData.CodePage = codePage;
                 fontData.Encoding = GetEncodingTable(codePage);
             }
             return fontData;
@@ -311,6 +327,257 @@ namespace Stimulsoft.Report.Import
 			return false;
 		}
 
+		private void SetFont(ref StiRtfState state, ArrayList fontTable)
+		{
+			StiRtfFontData fontData = GetFontData(state, fontTable);
+			state.Encoding = fontData.Encoding;
+			state.CodePage = fontData.CodePage;
+			state.FontHasCharset = fontData.HasCharset;
+		}
+
+		private static bool IsLeadByte(int codePage, int value)
+		{
+			switch (codePage)
+			{
+				case 932:
+					return (value >= 0x81 && value <= 0x9F) || (value >= 0xE0 && value <= 0xFC);
+
+				case 936:
+				case 949:
+				case 950:
+					return value >= 0x81 && value <= 0xFE;
+
+				default:
+					return false;
+			}
+		}
+
+		private static bool IsSkippedDestination(string key)
+		{
+			switch (key)
+			{
+				case "object":
+				case "nonshppict":
+				case "pict":
+				//the headers, the footers and the footnotes are not a part of the body
+				case "header":
+				case "headerl":
+				case "headerr":
+				case "headerf":
+				case "footer":
+				case "footerl":
+				case "footerr":
+				case "footerf":
+				case "footnote":
+					return true;
+
+				default:
+					return StiRtfTree.TokensHash.ContainsKey(key) && (int)StiRtfTree.TokensHash[key] == 0;
+			}
+		}
+
+		private static void AppendChar(StringBuilder res, char value, StiRtfState state)
+		{
+			if (!state.Hidden) res.Append(value);
+		}
+
+		private void AppendByte(StringBuilder res, int value, StiRtfState state)
+		{
+			if (value < 0 || value > 255) return;
+
+			if (fallbackCount > 0)
+			{
+				fallbackCount--;
+				return;
+			}
+
+			if (leadByte >= 0)
+			{
+				int firstByte = leadByte;
+				leadByte = -1;
+				if (value >= 0x40)
+				{
+					byte[] bytes = new byte[] { (byte)firstByte, (byte)value };
+					if (!state.Hidden) res.Append(Encoding.GetEncoding(state.CodePage).GetChars(bytes));
+					return;
+				}
+				//not a pair: both bytes are single characters
+				AppendChar(res, state.Encoding[firstByte], state);
+			}
+
+			if (IsLeadByte(state.CodePage, value))
+			{
+				leadByte = value;
+				return;
+			}
+			AppendChar(res, state.Encoding[value], state);
+		}
+
+		//The text of the document and the keywords of the character formatting,
+		//the same for a paragraph and for a cell.
+		private void ProcessTextToken(StiRtfTreeNode node, StringBuilder res, ref StiRtfState state,
+			ArrayList fontTable)
+		{
+			if (node.NodeType == StiRtfNodeType.Text)
+			{
+				for (int index = 0; index < node.NodeKey.Length; index++)
+				{
+					AppendByte(res, node.NodeKey[index], state);
+				}
+				return;
+			}
+
+			if (node.NodeType == StiRtfNodeType.Control)
+			{
+				switch (node.NodeKey)
+				{
+					case "'":
+						if (node.HasParameter) AppendByte(res, node.Parameter, state);
+						break;
+					case "~":
+						AppendChar(res, (char)0xA0, state);
+						break;
+					case "_":
+						AppendChar(res, '-', state);
+						break;
+					//a backslash at the end of a line is a paragraph
+					case "\r":
+					case "\n":
+						if (!state.Hidden) res.Append("\r\n");
+						break;
+				}
+				return;
+			}
+
+			if (node.NodeType != StiRtfNodeType.Keyword) return;
+
+			//a keyword ends the characters which repeat "\u" and breaks a pair of bytes
+			fallbackCount = 0;
+			leadByte = -1;
+
+			switch (node.NodeKey)
+			{
+				case "lang":
+					//the language sets the code page only for a font which doesn't name it
+					int codepage = GetCodepageFromLang(node.Parameter);
+					if (codepage >= 0 && !state.FontHasCharset)
+					{
+						state.Encoding = GetEncodingTable(codepage);
+						state.CodePage = codepage;
+					}
+					break;
+				case "cf":
+					state.FontColor = node.Parameter;
+					break;
+				case "f":
+					state.FontNumber = node.Parameter;
+					SetFont(ref state, fontTable);
+					break;
+				case "af":
+					state.AFontNumber = node.Parameter;
+					if (state.FontNumber == 0) SetFont(ref state, fontTable);
+					break;
+				case "fs":
+					state.FontSize = node.Parameter / 2f;
+					break;
+				case "b":
+					state.Bold = !node.HasParameter;
+					break;
+				case "i":
+					state.Italic = !node.HasParameter;
+					break;
+				case "ul":
+					state.Underline = !node.HasParameter;
+					break;
+				case "v":
+					state.Hidden = !node.HasParameter || node.Parameter != 0;
+					break;
+				case "plain":
+					state.Bold = false;
+					state.Italic = false;
+					state.Underline = false;
+					state.Hidden = false;
+					state.FontColor = 0;
+					state.FontSize = defaultFontSize;
+					state.FontNumber = defaultFontNumber;
+					SetFont(ref state, fontTable);
+					break;
+
+				case "par":
+					if (!state.Hidden) res.Append("\r\n");
+					break;
+				case "line":
+					if (!state.Hidden) res.Append("\n");
+					break;
+				case "tab":
+					if (!state.Hidden) res.Append("\t");
+					break;
+
+				case "uc":
+					state.UnicodeSkip = Math.Max(0, node.Parameter);
+					break;
+				case "u":
+					AppendChar(res, (char)(node.Parameter & 0xFFFF), state);
+					fallbackCount = state.UnicodeSkip;
+					break;
+
+				case "lquote":
+					AppendChar(res, (char)0x2018, state);
+					break;
+				case "rquote":
+					AppendChar(res, (char)0x2019, state);
+					break;
+				case "ldblquote":
+					AppendChar(res, (char)0x201C, state);
+					break;
+				case "rdblquote":
+					AppendChar(res, (char)0x201D, state);
+					break;
+				case "endash":
+					AppendChar(res, (char)0x2013, state);
+					break;
+				case "emdash":
+					AppendChar(res, (char)0x2014, state);
+					break;
+				case "bullet":
+					AppendChar(res, (char)0x2022, state);
+					break;
+				case "emspace":
+				case "enspace":
+				case "qmspace":
+					AppendChar(res, ' ', state);
+					break;
+			}
+		}
+
+		private static void SetText(StiText text, string value)
+		{
+			StringBuilder clean = new StringBuilder(value.Length);
+			for (int index = 0; index < value.Length; index++)
+			{
+				char symbol = value[index];
+				if (char.IsHighSurrogate(symbol) && index + 1 < value.Length && char.IsLowSurrogate(value[index + 1]))
+				{
+					clean.Append(symbol);
+					clean.Append(value[index + 1]);
+					index++;
+				}
+				else if (char.IsSurrogate(symbol))
+				{
+					//a half of a pair can't be saved to the report
+					clean.Append((char)0xFFFD);
+				}
+				else if (symbol >= ' ' || symbol == '\t' || symbol == '\r' || symbol == '\n')
+				{
+					clean.Append(symbol);
+				}
+			}
+			text.Text = clean.ToString();
+
+			//a brace of the document is a text, not an expression of the report
+			if (value.IndexOf('{') >= 0) text.OnlyText = true;
+		}
+
 		private void UpdatePage(StiPage page, StiRtfPageData pageData)
 		{
 			page.PageWidth = Convert(pageData.SectWidth);
@@ -369,7 +636,9 @@ namespace Stimulsoft.Report.Import
                 mainCodePage = 1252;
                 ArrayList fontTable = new ArrayList();
                 ArrayList colorTable = new ArrayList();
-                int defaultFontNumber = 0;
+                defaultFontNumber = 0;
+                fallbackCount = 0;
+                leadByte = -1;
                 StiRtfNodeCollection main = tree.rootNode.ChildNodes[0].ChildNodes;
                 int pos = 0;
                 //bool afterGroup = false;
@@ -497,6 +766,8 @@ namespace Stimulsoft.Report.Import
                 StiRtfState currentState = new StiRtfState();
                 StiRtfState beginState = new StiRtfState();
                 currentState.Encoding = GetEncodingTable(mainCodePage);
+                currentState.CodePage = mainCodePage;
+                currentState.UnicodeSkip = 1;
                 //the defaults of RTF for a text without "\f" and "\fs"
                 currentState.FontNumber = defaultFontNumber;
                 currentState.FontSize = defaultFontSize;
@@ -546,15 +817,7 @@ namespace Stimulsoft.Report.Import
                                             }
                                             #endregion
                                         }
-                                        if (nextNode.NodeKey == "object")
-                                        {
-                                            needSkipGroup = true;
-                                        }
-                                        if (nextNode.NodeKey == "nonshppict")
-                                        {
-                                            needSkipGroup = true;
-                                        }
-                                        if (nextNode.NodeKey == "pict")
+                                        if (IsSkippedDestination(nextNode.NodeKey))
                                         {
                                             needSkipGroup = true;
                                         }
@@ -663,72 +926,9 @@ namespace Stimulsoft.Report.Import
                                             pageData.SectLandscape = true;
                                             UpdatePage(currentPage, pageData);
                                             break;
-
-                                        case "lang":
-                                            int codepage = GetCodepageFromLang(node.Parameter);
-                                            if (codepage >= 0) currentState.Encoding = GetEncodingTable(codepage);
-                                            break;
-                                        case "cf":
-                                            currentState.FontColor = node.Parameter;
-                                            break;
-                                        case "f":
-                                            currentState.FontNumber = node.Parameter;
-                                            currentState.Encoding = GetFontData(currentState, fontTable).Encoding;
-                                            break;
-                                        case "af":
-                                            currentState.AFontNumber = node.Parameter;
-                                            if (currentState.FontNumber == 0)
-                                            {
-                                                currentState.Encoding = GetFontData(currentState, fontTable).Encoding;
-                                            }
-                                            break;
-                                        case "fs":
-                                            currentState.FontSize = node.Parameter / 2f;
-                                            break;
-                                        case "b":
-                                            currentState.Bold = !node.HasParameter;
-                                            break;
-                                        case "i":
-                                            currentState.Italic = !node.HasParameter;
-                                            break;
-                                        case "ul":
-                                            currentState.Underline = !node.HasParameter;
-                                            break;
-                                        case "par":
-                                            res.Append("\r\n");
-                                            break;
-                                        case "line":
-                                            res.Append("\n");
-                                            break;
-                                        case "tab":
-                                            res.Append("\t");
-                                            break;
-
-                                        case "u":
-                                            res.Append((char)node.Parameter);
-                                            if (node.NextToken.NodeType == StiRtfNodeType.Text)
-                                            {
-                                                StiRtfTreeNode nextNode = node.NextToken;
-                                                if (nextNode.NodeKey.StartsWith("?", StringComparison.InvariantCulture))
-                                                {
-                                                    nextNode.NodeKey = nextNode.NodeKey.Substring(1);
-                                                }
-                                            }
-                                            break;
                                     }
                                 }
-                                if (node.NodeType == StiRtfNodeType.Text)
-                                {
-                                    //res.Append(node.NodeKey);
-                                    for (int indexChar = 0; indexChar < node.NodeKey.Length; indexChar++)
-                                    {
-                                        res.Append(currentState.Encoding[node.NodeKey[indexChar]]);
-                                    }
-                                }
-                                if ((node.NodeType == StiRtfNodeType.Control) && (node.HasParameter))
-                                {
-                                    res.Append(currentState.Encoding[node.Parameter]);
-                                }
+                                ProcessTextToken(node, res, ref currentState, fontTable);
                             }
                             if (node == data.end) endLoop = true;
                             node = node.NextFlateToken;
@@ -745,7 +945,7 @@ namespace Stimulsoft.Report.Import
                             currentPage.Components.Add(band);
 
                             StiText text = new StiText();
-                            text.Text = res.ToString();
+                            SetText(text, res.ToString());
                             //text.Width = defaultTextBoxWidth;
                             text.Width = Convert(pageData.SectWidth - pageData.SectMarginLeft - pageData.SectMarginRight);
                             text.Height = defaultTextBoxHeight;
@@ -814,6 +1014,8 @@ namespace Stimulsoft.Report.Import
                             //its content starts at once
                             bool cellContentPresent = cells.Count > 0;
                             bool cellClosed = false;
+                            //the cells which got their content before the definition of the row (SAS writes so)
+                            ArrayList pendingCells = new ArrayList();
                             StiBorderSides borderSide = StiBorderSides.None;
                             double lineHeight = defaultTextBoxHeight;
                             while (!endLoop)
@@ -849,15 +1051,7 @@ namespace Stimulsoft.Report.Import
                                                 }
                                                 #endregion
                                             }
-                                            if (nextNode.NodeKey == "object")
-                                            {
-                                                needSkipGroup = true;
-                                            }
-                                            if (nextNode.NodeKey == "nonshppict")
-                                            {
-                                                needSkipGroup = true;
-                                            }
-                                            if (nextNode.NodeKey == "pict")
+                                            if (IsSkippedDestination(nextNode.NodeKey))
                                             {
                                                 needSkipGroup = true;
                                             }
@@ -877,21 +1071,16 @@ namespace Stimulsoft.Report.Import
 
                                 if ((!skipLoop) && (skipGroupCount == 0))
                                 {
-                                    if (node.NodeType == StiRtfNodeType.Text)
-                                    {
-                                        //res.Append(node.NodeKey);
-                                        for (int indexChar = 0; indexChar < node.NodeKey.Length; indexChar++)
-                                        {
-                                            res.Append(currentState.Encoding[node.NodeKey[indexChar]]);
-                                        }
-                                    }
+                                    ProcessTextToken(node, res, ref currentState, fontTable);
                                     if (node.NodeType == StiRtfNodeType.Keyword)
                                     {
                                         switch (node.NodeKey)
                                         {
                                             #region //tbldef
                                             case "trowd":
-                                                if (node != data.start)
+                                                //the second definition repeats the first one; it is read
+                                                //only when the content of the row had no definition
+                                                if (node != data.start && (cells.Count > 0 || pendingCells.Count == 0))
                                                 {
                                                     skipLoop = true;
                                                     break;
@@ -990,6 +1179,15 @@ namespace Stimulsoft.Report.Import
                                                 currentCell.Content.Width = posX - previousPosX;
                                                 currentCell.Content.Height = Math.Abs(lineHeight);
                                                 if (lineHeight < 0) currentCell.FixedHeight = true;
+                                                if (cells.Count < pendingCells.Count)
+                                                {
+                                                    StiText content = ((StiRtfCell)pendingCells[cells.Count]).Content;
+                                                    currentCell.Content.Text = content.Text;
+                                                    currentCell.Content.OnlyText = content.OnlyText;
+                                                    currentCell.Content.Font = content.Font;
+                                                    currentCell.Content.TextBrush = content.TextBrush;
+                                                    currentCell.Content.HorAlignment = content.HorAlignment;
+                                                }
                                                 cells.Add(currentCell);
                                                 currentCell = new StiRtfCell();
                                                 currentCell.Content.Left = posX;
@@ -1001,9 +1199,12 @@ namespace Stimulsoft.Report.Import
                                                 //the definition
                                                 if (!cellContentPresent && !HasCellDefinitionAhead(node, data.end))
                                                 {
-                                                    cellIndex = 0;
                                                     cellContentPresent = true;
-                                                    currentCell = (StiRtfCell)cells[0];
+                                                    if (pendingCells.Count == 0)
+                                                    {
+                                                        cellIndex = 0;
+                                                        currentCell = (StiRtfCell)cells[0];
+                                                    }
                                                 }
                                                 break;
                                                 #endregion
@@ -1023,62 +1224,9 @@ namespace Stimulsoft.Report.Import
                                                 currentCell.Content.HorAlignment = StiTextHorAlignment.Center;
                                                 break;
 
-                                            case "lang":
-                                                int codepage = GetCodepageFromLang(node.Parameter);
-                                                if (codepage >= 0) currentState.Encoding = GetEncodingTable(codepage);
-                                                break;
-                                            case "cf":
-                                                currentState.FontColor = node.Parameter;
-                                                break;
-                                            case "f":
-                                                currentState.FontNumber = node.Parameter;
-                                                currentState.Encoding = GetFontData(currentState, fontTable).Encoding;
-                                                break;
-                                            case "af":
-                                                currentState.AFontNumber = node.Parameter;
-                                                if (currentState.FontNumber == 0)
-                                                {
-                                                    currentState.Encoding = GetFontData(currentState, fontTable).Encoding;
-                                                }
-                                                break;
-                                            case "fs":
-                                                currentState.FontSize = node.Parameter / 2f;
-                                                break;
-                                            case "b":
-                                                currentState.Bold = !node.HasParameter;
-                                                break;
-                                            case "i":
-                                                currentState.Italic = !node.HasParameter;
-                                                break;
-                                            case "ul":
-                                                currentState.Underline = !node.HasParameter;
-                                                break;
-
-                                            case "par":
-                                                res.Append("\r\n");
-                                                break;
-                                            case "line":
-                                                res.Append("\n");
-                                                break;
-                                            case "tab":
-                                                res.Append("\t");
-                                                break;
-
-                                            case "u":
-                                                res.Append((char)node.Parameter);
-                                                if (node.NextToken.NodeType == StiRtfNodeType.Text)
-                                                {
-                                                    StiRtfTreeNode nextNode = node.NextToken;
-                                                    if (nextNode.NodeKey.StartsWith("?", StringComparison.InvariantCulture))
-                                                    {
-                                                        nextNode.NodeKey = nextNode.NodeKey.Substring(1);
-                                                    }
-                                                }
-                                                break;
-
                                             case "cell":
                                                 cellClosed = true;
-                                                currentCell.Content.Text = res.ToString();
+                                                SetText(currentCell.Content, res.ToString());
                                                 FontStyle fs = FontStyle.Regular;
                                                 if (beginState.Bold) fs |= FontStyle.Bold;
                                                 if (beginState.Italic) fs |= FontStyle.Italic;
@@ -1087,6 +1235,7 @@ namespace Stimulsoft.Report.Import
                                                 currentCell.Content.Font = new Font(fontData.Name, (beginState.FontSize > 0 ? (float)beginState.FontSize : 2), fs);    //!!! fontSize
                                                 Color textColor = GetColor(colorTable, beginState.FontColor);
                                                 currentCell.Content.TextBrush = new StiSolidBrush(textColor);
+                                                if (cellIndex >= cells.Count) pendingCells.Add(currentCell);
                                                 res = new StringBuilder();
                                                 cellIndex++;
                                                 if (cellIndex < cells.Count)
@@ -1099,13 +1248,6 @@ namespace Stimulsoft.Report.Import
                                                 }
                                                 break;
                                             #endregion
-                                        }
-                                    }
-                                    if (node.NodeType == StiRtfNodeType.Control)
-                                    {
-                                        if (node.HasParameter)
-                                        {
-                                            res.Append(currentState.Encoding[node.Parameter]);
                                         }
                                     }
                                 }
