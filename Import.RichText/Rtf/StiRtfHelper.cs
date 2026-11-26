@@ -99,6 +99,11 @@ namespace Stimulsoft.Report.Import
 			public ArrayList Pictures = null;
 			//the cell continues the cell on its left
 			public bool JoinedToLeft = false;
+			//the sides of the border: each of them has its own line
+			public StiAdvancedBorder Sides = new StiAdvancedBorder();
+			//the offset and the alignment of the row, its first cell keeps them
+			public double RowLeft;
+			public StiTextHorAlignment RowAlignment;
 
 			public StiRtfCell()
 			{
@@ -114,6 +119,7 @@ namespace Stimulsoft.Report.Import
 			{
 				StiRtfCell newCell = (StiRtfCell)this.MemberwiseClone();
 				newCell.Content = (StiText)this.Content.Clone();
+				newCell.Sides = (StiAdvancedBorder)this.Sides.Clone();
 				return newCell;
 			}
 		}
@@ -746,6 +752,18 @@ namespace Stimulsoft.Report.Import
 			return pageBand.Band;
 		}
 
+		//The band for the rows of a table which are repeated on every page. It stands before the data band
+		//with the other rows of the table.
+		private StiBand AddHeaderBand(StiPage page)
+		{
+			StiHeaderBand band = new StiHeaderBand();
+			band.Top = defaultTextBoxHeight * 2 * bandsCounter;
+			band.Name = string.Format("HeaderBand{0}", bandsCounter++);
+			band.PrintOnAllPages = true;
+			page.Components.Add(band);
+			return band;
+		}
+
 		//The band which takes the next text or table: a new data band of the body,
 		//or the header or footer of the page.
 		private StiBand GetContentBand(StiPage page, string pageBandKey)
@@ -1181,6 +1199,137 @@ namespace Stimulsoft.Report.Import
 			return node.NodeType == StiRtfNodeType.Keyword && node.NodeKey == "u";
 		}
 
+		//Returns false for a keyword which is not a kind of the line of a border.
+		private static bool TryGetBorderStyle(string key, out StiPenStyle style)
+		{
+			style = StiPenStyle.Solid;
+			if (!key.StartsWith("brdr", StringComparison.Ordinal)) return false;
+
+			switch (key)
+			{
+				//the width, the color, the shadow and the space of a border, the borders of a paragraph
+				case "brdrw":
+				case "brdrcf":
+				case "brdrsh":
+				case "brdrsp":
+				case "brdrart":
+				case "brdrt":
+				case "brdrb":
+				case "brdrl":
+				case "brdrr":
+				case "brdrbtw":
+				case "brdrbar":
+					return false;
+
+				case "brdrnone":
+				case "brdrnil":
+				case "brdrtbl":
+					style = StiPenStyle.None;
+					return true;
+
+				case "brdrdot":
+					style = StiPenStyle.Dot;
+					return true;
+
+				case "brdrdash":
+				case "brdrdashsm":
+					style = StiPenStyle.Dash;
+					return true;
+
+				case "brdrdashd":
+				case "brdrdashdotstr":
+					style = StiPenStyle.DashDot;
+					return true;
+
+				case "brdrdashdd":
+					style = StiPenStyle.DashDotDot;
+					return true;
+
+				//a thick line
+				case "brdrth":
+					return true;
+			}
+
+			//the double and triple lines, the pairs of a thin and a thick line: "brdrtnthsg", "brdrthtnlg"
+			bool isDouble = key == "brdrdb" || key == "brdrtriple" || key == "brdrwavydb" ||
+				key.StartsWith("brdrtn", StringComparison.Ordinal) ||
+				key.StartsWith("brdrth", StringComparison.Ordinal);
+			if (isDouble) style = StiPenStyle.Double;
+
+			return true;
+		}
+
+		//A width or a color of a side shows it with a solid line when the kind of the line is not set.
+		private static void ShowBorderSide(StiBorderSide side)
+		{
+			if (side.Style == StiPenStyle.None) side.Style = StiPenStyle.Solid;
+		}
+
+		//The border of a cell: a simple one when all its sides have the same line.
+		private static StiBorder GetBorder(StiAdvancedBorder sides)
+		{
+			StiBorderSide[] list = new StiBorderSide[]
+			{
+				sides.TopSide, sides.BottomSide, sides.LeftSide, sides.RightSide
+			};
+			StiBorderSide first = null;
+			bool isSame = true;
+			foreach (StiBorderSide side in list)
+			{
+				if (side.Style == StiPenStyle.None) continue;
+
+				if (first == null)
+				{
+					first = side;
+				}
+				else if (side.Style != first.Style || side.Size != first.Size || side.Color != first.Color)
+				{
+					isSame = false;
+				}
+			}
+
+			if (first == null) return new StiBorder();
+			if (!isSame) return sides;
+
+			return new StiBorder(sides.Side, first.Color, first.Size, first.Style);
+		}
+
+		//The leading rows of a table with "trhdr" are repeated on every page: they go to a header band.
+		//It can't be done when a cell of these rows is merged with the cells below them.
+		private static bool CanSplitHeader(ArrayList table, int headerLines)
+		{
+			if (headerLines <= 0 || headerLines >= table.Count) return false;
+
+			for (int indexLine = 0; indexLine < headerLines; indexLine++)
+			{
+				foreach (StiRtfCell cell in (ArrayList)table[indexLine])
+				{
+					if (indexLine + cell.MergedCellsCount >= headerLines) return false;
+				}
+			}
+			return true;
+		}
+
+		//The left position of a row: its offset ("trleft"), or the place of a centered or right aligned table.
+		private static double GetRowLeft(StiRtfCell[,] matrix, int indexLine, int cellsCount, double pageWidth)
+		{
+			StiRtfCell firstCell = matrix[indexLine, 0];
+			if (firstCell == null) return 0;
+
+			double width = 0;
+			for (int indexCell = 0; indexCell < cellsCount; indexCell++)
+			{
+				StiRtfCell cell = matrix[indexLine, indexCell];
+				if (cell != null) width += cell.Content.Width;
+			}
+
+			double left = firstCell.RowLeft;
+			if (firstCell.RowAlignment == StiTextHorAlignment.Center) left = (pageWidth - width) / 2;
+			if (firstCell.RowAlignment == StiTextHorAlignment.Right) left = pageWidth - width;
+
+			return Math.Max(0, Math.Round(left, 1));
+		}
+
 		//Joins a cell to the cell on its left. Some writers put the text of the merged cell
 		//not to the first of its parts, so the text of the joined part is kept too.
 		private static void JoinCell(StiRtfCell firstCell, StiRtfCell cell)
@@ -1209,6 +1358,8 @@ namespace Stimulsoft.Report.Import
 				firstCell.Pictures.AddRange(cell.Pictures);
 			}
 
+			//the right side of the merged cell is the right side of its last part
+			firstCell.Sides.RightSide = cell.Sides.RightSide;
 			firstCell.Content.Width += cell.Content.Width;
 			cell.Content.Width = 0;
 			cell.Merged = true;
@@ -1723,6 +1874,9 @@ namespace Stimulsoft.Report.Import
                     {
                         #region table rows
                         ArrayList previousCells = null;
+                        //the count of the leading rows of the table which are repeated on every page
+                        int headerLines = 0;
+                        bool headerRow = false;
                         //a table of a header doesn't join a table of the body which follows it
                         string tablePageBand = data.pageBand;
                         ArrayList table = new ArrayList();
@@ -1773,7 +1927,13 @@ namespace Stimulsoft.Report.Import
                             ArrayList pendingCells = new ArrayList();
                             //the pictures which stand before the definition of the row, they go to its first cell
                             ArrayList contentPictures = null;
-                            StiBorderSides borderSide = StiBorderSides.None;
+                            //the side of the cell which takes the keywords of a border,
+                            //null for a border of another kind
+                            StiBorderSide borderSide = null;
+                            //the side has no line, so its width and color don't show it
+                            bool borderHidden = false;
+                            double rowLeft = 0;
+                            StiTextHorAlignment rowAlignment = StiTextHorAlignment.Left;
                             double lineHeight = defaultTextBoxHeight;
                             double cellGap = 0;
                             while (!endLoop)
@@ -1878,6 +2038,14 @@ namespace Stimulsoft.Report.Import
                                         }
                                     }
 
+                                    StiPenStyle borderStyle;
+                                    bool isBorderStyle = isRowKeyword && borderSide != null;
+                                    if (isBorderStyle && TryGetBorderStyle(node.NodeKey, out borderStyle))
+                                    {
+                                        borderSide.Style = borderStyle;
+                                        borderHidden = borderStyle == StiPenStyle.None;
+                                    }
+
                                     //the keywords of a nested definition belong to the nested table, not to this row
                                     if (isRowKeyword)
                                     {
@@ -1894,9 +2062,32 @@ namespace Stimulsoft.Report.Import
                                                 currentCell = new StiRtfCell();
                                                 cellIndex = 0;
                                                 cellContentPresent = false;
+                                                headerRow = false;
                                                 break;
 
-                                            case "trrh":
+                                                case "trhdr":
+                                                    headerRow = true;
+                                                    break;
+
+                                                case "trleft":
+                                                    if (node.Parameter > 0 && cells.Count == 0)
+                                                    {
+                                                        rowLeft = Convert(node.Parameter);
+                                                        posX = rowLeft;
+                                                    }
+                                                    break;
+
+                                                case "trql":
+                                                    rowAlignment = StiTextHorAlignment.Left;
+                                                    break;
+                                                case "trqc":
+                                                    rowAlignment = StiTextHorAlignment.Center;
+                                                    break;
+                                                case "trqr":
+                                                    rowAlignment = StiTextHorAlignment.Right;
+                                                    break;
+
+                                                case "trrh":
                                                 lineHeight = Convert(node.Parameter);
                                                 break;
 
@@ -1936,47 +2127,56 @@ namespace Stimulsoft.Report.Import
                                                 break;
 
                                             case "clbrdrt":
-                                                borderSide = StiBorderSides.Top;
+                                                borderSide = currentCell.Sides.TopSide;
+                                                borderHidden = false;
                                                 break;
                                             case "clbrdrb":
-                                                borderSide = StiBorderSides.Bottom;
+                                                borderSide = currentCell.Sides.BottomSide;
+                                                borderHidden = false;
                                                 break;
                                             case "clbrdrl":
-                                                borderSide = StiBorderSides.Left;
+                                                borderSide = currentCell.Sides.LeftSide;
+                                                borderHidden = false;
                                                 break;
                                             case "clbrdrr":
-                                                borderSide = StiBorderSides.Right;
+                                                borderSide = currentCell.Sides.RightSide;
+                                                borderHidden = false;
                                                 break;
 
-                                            case "brdrnone":
-                                                currentCell.Content.Border.Side |= borderSide;
-                                                currentCell.Content.Border.Side ^= borderSide;
-                                                break;
-                                            case "brdrs":
-                                                currentCell.Content.Border.Side |= borderSide;
-                                                currentCell.Content.Border.Style = StiPenStyle.Solid;
-                                                break;
-                                            case "brdrdb":
-                                                currentCell.Content.Border.Side |= borderSide;
-                                                currentCell.Content.Border.Style = StiPenStyle.Double;
-                                                break;
-                                            case "brdrdot":
-                                                currentCell.Content.Border.Side |= borderSide;
-                                                currentCell.Content.Border.Style = StiPenStyle.Dot;
-                                                break;
-                                            case "brdrdash":
-                                                currentCell.Content.Border.Side |= borderSide;
-                                                currentCell.Content.Border.Style = StiPenStyle.Dash;
+                                            //the borders of a paragraph and of the row, the diagonals:
+                                            //they are not the sides of a cell
+                                            case "brdrt":
+                                            case "brdrb":
+                                            case "brdrl":
+                                            case "brdrr":
+                                            case "brdrbtw":
+                                            case "brdrbar":
+                                            case "box":
+                                            case "trbrdrt":
+                                            case "trbrdrb":
+                                            case "trbrdrl":
+                                            case "trbrdrr":
+                                            case "trbrdrh":
+                                            case "trbrdrv":
+                                            case "cldglu":
+                                            case "cldgll":
+                                                borderSide = null;
                                                 break;
 
                                             case "brdrw":
-                                                currentCell.Content.Border.Side |= borderSide;
-                                                currentCell.Content.Border.Size = Convert(node.Parameter);
+                                                if (borderSide != null)
+                                                {
+                                                    borderSide.Size = Convert(node.Parameter);
+                                                    if (!borderHidden) ShowBorderSide(borderSide);
+                                                }
                                                 break;
 
                                             case "brdrcf":
-                                                currentCell.Content.Border.Side |= borderSide;
-                                                currentCell.Content.Border.Color = GetColor(colorTable, node.Parameter);
+                                                if (borderSide != null)
+                                                {
+                                                    borderSide.Color = GetColor(colorTable, node.Parameter);
+                                                    if (!borderHidden) ShowBorderSide(borderSide);
+                                                }
                                                 break;
 
                                             case "clcbpat":
@@ -1991,6 +2191,11 @@ namespace Stimulsoft.Report.Import
                                                 double previousPosX = posX;
                                                 posX = Convert(node.Parameter);
                                                 currentCell.Content.Width = posX - previousPosX;
+                                                if (cells.Count == 0)
+                                                {
+                                                    currentCell.RowLeft = rowLeft;
+                                                    currentCell.RowAlignment = rowAlignment;
+                                                }
                                                 if (cellGap > 0)
                                                 {
                                                     StiMargins gap = new StiMargins(cellGap, cellGap, 0, 0);
@@ -2084,6 +2289,7 @@ namespace Stimulsoft.Report.Import
                             //a tail of the table without any "cell" is not a row
                             if ((cells != null) && (cells.Count > 0) && cellContentPresent && cellClosed)
                             {
+                                if (headerRow && headerLines == table.Count) headerLines++;
                                 table.Add(cells);
                                 if (mergedCells.Count > 0)
                                 {
@@ -2103,6 +2309,8 @@ namespace Stimulsoft.Report.Import
                         #endregion
 
                         #region create new band
+                        if (tablePageBand != null || !CanSplitHeader(table, headerLines)) headerLines = 0;
+                        StiBand headerBand = headerLines > 0 ? AddHeaderBand(currentPage) : null;
                         StiBand band = GetContentBand(currentPage, tablePageBand);
                         double bandTop = band is StiDataBand ? 0 : band.Height;
                         #endregion
@@ -2157,7 +2365,7 @@ namespace Stimulsoft.Report.Import
                                         linesHeight[indexLine] = cell.Content.Height;
                                         break;
                                     }
-                                    cell.Content.Parent = band;
+                                    cell.Content.Parent = indexLine < headerLines ? headerBand : band;
                                     cell.Content.Page = currentPage;
                                     cell.Content.CanGrow = true;
                                     cell.Content.WordWrap = true;
@@ -2181,7 +2389,14 @@ namespace Stimulsoft.Report.Import
                         double cellPosY = bandTop;
                         for (int indexLine = 0; indexLine < table.Count; indexLine++)
                         {
-                            double cellPosX = 0;
+                            //the rows after the repeated ones start the data band
+                            if (headerBand != null && indexLine == headerLines)
+                            {
+                                headerBand.Height = cellPosY;
+                                cellPosY = bandTop;
+                            }
+                            StiBand lineBand = indexLine < headerLines ? headerBand : band;
+                            double cellPosX = GetRowLeft(matrix, indexLine, cellsCount, currentPage.Width);
                             for (int indexCell = 0; indexCell < cellsCount; indexCell++)
                             {
                                 StiRtfCell cell = matrix[indexLine, indexCell];
@@ -2206,10 +2421,11 @@ namespace Stimulsoft.Report.Import
                                     {
                                         cell.Content.Left = cellPosX;
                                         cell.Content.Top = cellPosY;
-                                        cell.Content.Parent = band;
+                                        cell.Content.Parent = lineBand;
+                                        cell.Content.Border = GetBorder(cell.Sides);
                                         StiText text = cell.Content;
-                                        band.Components.Add(text);
-                                        AddCellPictures(band, cell, currentPage);
+                                        lineBand.Components.Add(text);
+                                        AddCellPictures(lineBand, cell, currentPage);
                                     }
                                     cellPosX += cell.Content.Width;
                                 }
