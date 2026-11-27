@@ -406,14 +406,8 @@ namespace Stimulsoft.Report.Import
 			StiRtfTreeNode lastRootNode = rootNode.ChildNodes[0].LastChild;
 
             #region Skip header and info
+            //a file without groups of the header has no header, its text starts at once
             int pos = 0;
-            //find first group
-			while ((pos < main.Count) && (main[pos].NodeType != StiRtfNodeType.Group))
-			{
-				pos++;
-			}
-            //a file without groups has no header, its text starts at once
-            if (pos >= main.Count) pos = 0;
             //find last group in header or info
             while (pos < main.Count)
             {
@@ -434,6 +428,13 @@ namespace Stimulsoft.Report.Import
                         {
                             pos = pos2;
                             pos2 = main.Count;  //for break loop
+                            break;
+                        }
+                        //the text of the document has started: a starred group after it is not a header,
+                        //and the text before the group is not a part of the header
+                        if (IsContentToken(main[pos2]))
+                        {
+                            pos2 = main.Count;
                             break;
                         }
                         pos2++;

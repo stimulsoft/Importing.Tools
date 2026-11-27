@@ -229,6 +229,8 @@ namespace Stimulsoft.Report.Import
 		{
 			public int Number;
 			public int Charset;
+			//the font table names the charset of the font, even the "ANSI" one
+			public bool CharsetIsSet;
 			public string Name;
 			public bool Bold;
 			public bool Italic;
@@ -365,6 +367,9 @@ namespace Stimulsoft.Report.Import
                     //the charsets 0 and 1 are "ANSI" and "default": they don't name a code page
                     fontData.HasCharset = fontData.Charset > 1;
                 }
+                //"fcharset0" is the "ANSI" charset: the text of such a font is in the code page of the document,
+                //and the language of the text doesn't change it. A font without "fcharset" names nothing
+                if (fontData.Charset == 0 && fontData.CharsetIsSet) fontData.HasCharset = true;
                 fontData.CodePage = codePage;
                 fontData.Encoding = GetEncodingTable(codePage);
             }
@@ -538,6 +543,7 @@ namespace Stimulsoft.Report.Import
 					else if (fontData != null && node.NodeType == StiRtfNodeType.Keyword && node.NodeKey == "fcharset")
 					{
 						fontData.Charset = node.Parameter;
+						fontData.CharsetIsSet = true;
 					}
 					else if (fontData != null && fontData.Name == null && node.NodeType == StiRtfNodeType.Text)
 					{
@@ -2735,6 +2741,9 @@ namespace Stimulsoft.Report.Import
                                     StiRtfCell previousCell = ((StiRtfCell)previousCells[indexComp]).Clone();
                                     previousCell.Content.Text = string.Empty;
                                     previousCell.Content.AllowHtmlTags = false;
+                                    //the previous row can stand on a band already, where its cells got their names:
+                                    //a new cell gets its own one
+                                    previousCell.Content.Name = string.Empty;
                                     previousCell.Pictures = null;
                                     cells.Add(previousCell);
                                 }
