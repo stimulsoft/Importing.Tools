@@ -75,6 +75,11 @@ namespace Stimulsoft.Report.Import
 		private const double MinCellTextWidth = 5;
 		//the width which a word needs over its measured one to stay on one line
 		private const double WordWidthReserve = 2;
+		private const char LineFeed = (char)10;
+		private const char NonBreakingSpace = (char)0xA0;
+		//a single word of a cell can be wider than the cell by this part of its width
+		private const double MaxWordOverflow = 0.2;
+		private const string HtmlSizeAttribute = " size=\"";
 		//the colors of the document for the keywords of the text
 		private ArrayList documentColors;
 		private static Hashtable fontNames;
@@ -1569,6 +1574,13 @@ namespace Stimulsoft.Report.Import
 			}
 		}
 
+		//"par" before "cell" leaves an empty paragraph at the end of the cell, Word shows it as a line.
+		//A text component drops the last end of a line, so the line gets a character.
+		private static void KeepLastEmptyLine(StringBuilder res)
+		{
+			if (res.Length > 0 && res[res.Length - 1] == LineFeed) res.Append(NonBreakingSpace);
+		}
+
 		private static string GetLongestWord(string text)
 		{
 			string longest = string.Empty;
@@ -1586,19 +1598,71 @@ namespace Stimulsoft.Report.Import
 		//The writers of tables make a column as wide as its longest word and the padding need, and a report
 		//measures the word a little wider than Word does. A word which is broken in the middle looks worse
 		//than a text close to the border, so the padding on the sides gives its place to the word.
+		//A text with tags is measured by its words too: the tags are dropped, an entity is one character.
+		private static string GetTextWithoutTags(string html)
+		{
+			StringBuilder text = new StringBuilder(html.Length);
+			int index = 0;
+			while (index < html.Length)
+			{
+				char symbol = html[index];
+				int end = symbol == '<' ? html.IndexOf('>', index) : (symbol == '&' ? html.IndexOf(';', index) : -1);
+				if (end < 0)
+				{
+					text.Append(symbol);
+					index++;
+					continue;
+				}
+
+				//a tag ends a word: it can be the break of a line; "nbsp" is a space between the words
+				bool isSpace = symbol == '<' || string.CompareOrdinal(html, index, "&nbsp;", 0, 6) == 0;
+				text.Append(isSpace ? ' ' : 'x');
+				index = end + 1;
+			}
+			return text.ToString();
+		}
+
+		//The font to measure a word of a text with tags: the biggest size of its tags, bold when it has
+		//a bold part. The word is not found in the tags, so the widest case is taken.
+		private static Font GetProbeFont(StiText content, string html)
+		{
+			float size = content.Font.Size;
+			int index = html.IndexOf(HtmlSizeAttribute, StringComparison.Ordinal);
+			while (index >= 0)
+			{
+				int start = index + HtmlSizeAttribute.Length;
+				int end = html.IndexOf('"', start);
+				float tagSize = 0;
+				bool isSize = end > start && float.TryParse(html.Substring(start, end - start),
+					NumberStyles.Float, CultureInfo.InvariantCulture, out tagSize);
+				if (isSize && tagSize > size) size = tagSize;
+				index = html.IndexOf(HtmlSizeAttribute, start, StringComparison.Ordinal);
+			}
+
+			FontStyle style = content.Font.Style;
+			if (html.IndexOf("<b>", StringComparison.Ordinal) >= 0) style |= FontStyle.Bold;
+			return new Font(content.Font.Name, size, style);
+		}
+
 		private void FitCellPadding(StiText content)
 		{
 			StiMargins margins = content.Margins;
 			string text = content.Text.Value;
-			if (margins.Left + margins.Right <= 0 || content.AllowHtmlTags || string.IsNullOrEmpty(text)) return;
+			if (string.IsNullOrEmpty(text)) return;
 
+			Font font = content.Font;
+			if (content.AllowHtmlTags)
+			{
+				font = GetProbeFont(content, text);
+				text = GetTextWithoutTags(text);
+			}
 			string word = GetLongestWord(text);
 			if (word.Length < 2) return;
 
 			StiText probe = new StiText();
 			probe.Page = content.Page;
 			probe.Parent = content.Parent;
-			probe.Font = content.Font;
+			probe.Font = font;
 			probe.Text = word;
 			probe.OnlyText = true;
 			probe.WordWrap = false;
@@ -1609,8 +1673,16 @@ namespace Stimulsoft.Report.Import
 			if (free >= margins.Left + margins.Right) return;
 
 			double side = Math.Max(0, Math.Floor(free * 5) / 10);
-			content.Margins = new StiMargins(Math.Min(margins.Left, side), Math.Min(margins.Right, side),
-				margins.Top, margins.Bottom);
+			if (margins.Left + margins.Right > 0)
+			{
+				content.Margins = new StiMargins(Math.Min(margins.Left, side), Math.Min(margins.Right, side),
+					margins.Top, margins.Bottom);
+			}
+
+			//a single word which is wider than its cell by a little stays on one line: Word fits it, and
+			//a word with its last letter on the next line is worse than a letter close to the border
+			bool isSingleWord = text.Trim().Length == word.Length;
+			if (isSingleWord && free < 0 && -free <= content.Width * MaxWordOverflow) content.WordWrap = false;
 		}
 
 		//A paragraph ends with "par" or, in the files of TextEdit, with a backslash at the end of a line.
@@ -1635,7 +1707,9 @@ namespace Stimulsoft.Report.Import
 			if (res.Length <= start) return;
 
 			StiRtfTextRun last = runs.Count > 0 ? (StiRtfTextRun)runs[runs.Count - 1] : null;
-			if (last != null && last.Start + last.Length == start && IsSameCharacterFormat(last.State, state))
+			bool isSameRun = last != null && last.Start + last.Length == start &&
+				last.State.Alignment == state.Alignment && IsSameCharacterFormat(last.State, state);
+			if (isSameRun)
 			{
 				last.Length = res.Length - last.Start;
 				return;
@@ -1704,6 +1778,14 @@ namespace Stimulsoft.Report.Import
 			for (int index = start; index < end; index++)
 			{
 				char symbol = res[index];
+				//a text with tags shows several spaces as one, so the first of every two is a non-breaking one
+				if (symbol == ' ' && index + 1 < end && res[index + 1] == ' ')
+				{
+					html.Append("&nbsp; ");
+					index++;
+					continue;
+				}
+
 				switch (symbol)
 				{
 					case '&':
@@ -1789,15 +1871,62 @@ namespace Stimulsoft.Report.Import
 			if (font.Length > 0) html.Append("</font>");
 		}
 
+		//The alignment of the most of the characters: the paragraphs of a cell can have different ones.
+		private static StiTextHorAlignment GetMainAlignment(string res, ArrayList runs, StiTextHorAlignment alignment)
+		{
+			StiTextHorAlignment[] alignments = new StiTextHorAlignment[]
+			{
+				StiTextHorAlignment.Left, StiTextHorAlignment.Center, StiTextHorAlignment.Right,
+				StiTextHorAlignment.Width
+			};
+			int[] counts = new int[alignments.Length];
+			foreach (StiRtfTextRun run in runs)
+			{
+				int index = Array.IndexOf(alignments, run.State.Alignment);
+				if (index >= 0) counts[index] += GetTextLength(res, run);
+			}
+
+			int mainCount = 0;
+			for (int index = 0; index < alignments.Length; index++)
+			{
+				if (counts[index] <= mainCount) continue;
+
+				mainCount = counts[index];
+				alignment = alignments[index];
+			}
+			return alignment;
+		}
+
+		private static string GetAlignmentName(StiTextHorAlignment alignment)
+		{
+			switch (alignment)
+			{
+				case StiTextHorAlignment.Center:
+					return "center";
+
+				case StiTextHorAlignment.Right:
+					return "right";
+
+				case StiTextHorAlignment.Width:
+					return "justify";
+
+				default:
+					return "left";
+			}
+		}
+
 		//A text component has one font, so a text with several ones is written with the tags of HTML.
 		//Returns null for a text with one formatting: it stays a plain text. The main formatting loses its
-		//bold, italic and underline then: a tag can switch them on, but not off.
+		//bold, italic and underline then: a tag can switch them on, but not off. The alignment of the main
+		//formatting becomes the one of the most of the text, the other paragraphs get it with a tag.
 		private string GetHtmlText(string res, ArrayList runs, ref StiRtfState mainState,
 			ArrayList fontTable, ArrayList colorTable)
 		{
+			StiTextHorAlignment mainAlignment = GetMainAlignment(res, runs, mainState.Alignment);
 			bool isMixed = false;
 			foreach (StiRtfTextRun run in runs)
 			{
+				if (run.State.Alignment != mainAlignment && GetTextLength(res, run) > 0) isMixed = true;
 				//the font of a component has no color behind the characters and no raised ones
 				bool isOwnFormat = !IsSameCharacterFormat(run.State, mainState) ||
 					run.State.BackColor != 0 || run.State.Script != ScriptNone;
@@ -1808,15 +1937,31 @@ namespace Stimulsoft.Report.Import
 			mainState.Bold = false;
 			mainState.Italic = false;
 			mainState.Underline = false;
+			mainState.Alignment = mainAlignment;
 
 			StringBuilder html = new StringBuilder(res.Length + runs.Count * 16);
 			int position = 0;
+			//the alignment tag which is open now: it covers the runs of one alignment, with the ends
+			//of their paragraphs
+			bool isAlignmentOpen = false;
+			StiTextHorAlignment openAlignment = mainAlignment;
 			foreach (StiRtfTextRun run in runs)
 			{
 				int start = Math.Max(position, Math.Min(res.Length, run.Start));
 				int end = Math.Max(start, Math.Min(res.Length, run.Start + run.Length));
 				//a text between the runs is an expression of a field
 				AppendHtml(html, res, position, start);
+				if (isAlignmentOpen && run.State.Alignment != openAlignment)
+				{
+					html.Append("</text-align>");
+					isAlignmentOpen = false;
+				}
+				if (!isAlignmentOpen && run.State.Alignment != mainAlignment)
+				{
+					openAlignment = run.State.Alignment;
+					html.Append("<text-align=\"").Append(GetAlignmentName(openAlignment)).Append("\">");
+					isAlignmentOpen = true;
+				}
 				//a run of spaces needs no tags; any other one does, the main formatting has no bold now
 				if (GetTextLength(res, run) > 0)
 				{
@@ -1828,6 +1973,7 @@ namespace Stimulsoft.Report.Import
 				}
 				position = end;
 			}
+			if (isAlignmentOpen) html.Append("</text-align>");
 			AppendHtml(html, res, position, res.Length);
 			return html.ToString();
 		}
@@ -2997,6 +3143,7 @@ namespace Stimulsoft.Report.Import
 
                                             case "cell":
                                                 cellClosed = true;
+                                                KeepLastEmptyLine(res);
                                                 string plainText = res.ToString();
                                                 beginState = GetMainState(beginState, formats, plainText);
                                                 string html = GetHtmlText(plainText, formats, ref beginState,
@@ -3004,6 +3151,12 @@ namespace Stimulsoft.Report.Import
                                                 formats.Clear();
                                                 SetText(currentCell.Content, html ?? plainText);
                                                 currentCell.Content.AllowHtmlTags = html != null;
+                                                //the alignment belongs to the paragraph, and one paragraph can serve
+                                                //several cells: the keyword stands only before the first of them.
+                                                //A text with tags takes the alignment of the most of its characters
+                                                StiTextHorAlignment cellAlignment = currentState.Alignment;
+                                                if (html != null) cellAlignment = beginState.Alignment;
+                                                currentCell.Content.HorAlignment = cellAlignment;
                                                 FontStyle fs = FontStyle.Regular;
                                                 if (beginState.Bold) fs |= FontStyle.Bold;
                                                 if (beginState.Italic) fs |= FontStyle.Italic;
